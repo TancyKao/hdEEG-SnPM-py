@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<style>
+  :root { --ink:#1c2430; --muted:#5d6b7c; --line:#d8dee6; --bg:#f6f8fa; --card:#fff; --warn:#8a5a00; --warnbg:#fff6df; --sig:#0b5cad; }
+  body { font:15px/1.5 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif; color:var(--ink); background:var(--bg); margin:0; }
+  main { max-width:1080px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:24px; margin:0 0 4px; } h2 { font-size:19px; margin:0 0 10px; } h3 { font-size:16px; margin:18px 0 6px; }
+  .sub { color:var(--muted); margin:0 0 18px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px 18px; margin:0 0 16px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th, td { text-align:left; padding:5px 10px 5px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  td.num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .banner { background:var(--warnbg); border:1px solid #ecd9a0; color:var(--warn); border-radius:6px; padding:10px 12px; margin:10px 0; }
+  .sig { color:var(--sig); font-weight:600; }
+  img { max-width:100%; height:auto; display:block; margin:8px 0; }
+  .chans { color:var(--muted); font-size:13px; word-break:break-word; }
+  footer { color:var(--muted); font-size:13px; margin-top:20px; }
+  details { margin-top:8px; } summary { cursor:pointer; color:var(--muted); }
+</style>
+</head>
+<body><main>
+<h1>{{ title }}</h1>
+<p class="sub">{{ created }} · {{ montage }} · {{ n_channels }} scalp channels in the montage</p>
+
+<section>
+<h2>What was done</h2>
+<p>{{ methods }}</p>
+<table>
+{% for k, v in settings %}<tr><th>{{ k }}</th><td>{{ v }}</td></tr>
+{% endfor %}</table>
+{% if tail_note %}<p>{{ tail_note }}</p>{% endif %}
+{% if effects|length > 1 %}<p>Each effect below is corrected across channels. The effects are not corrected across each other, and neither are the post-hoc contrasts or the condition effects within each group.</p>{% endif %}
+{% for n in notes %}<div class="banner">{{ n }}</div>{% endfor %}
+</section>
+
+{% for e in effects %}
+<section id="fx-{{ e.key }}">
+<h2>{{ e.title }}</h2>
+{% if e.excluded_labels %}<div class="banner"><strong>{{ e.excluded_labels|length }} channel(s) were not tested.</strong>
+{% for reason, chans in e.excluded_groups %}<br>{{ reason[0]|upper }}{{ reason[1:] }} ({{ chans|length }}): {{ chans|join(", ") }}.{% endfor %}</div>{% endif %}
+{% if mixed and e.key == "condition" %}<p>The condition main effect is the condition effect averaged across groups with equal weight per group, as in a standard mixed analysis of variance. With unequal group sizes this is not the average over subjects.</p>{% endif %}
+<p><strong>Whole-head test</strong> (channel average over {{ e.global_n_channels }} channels, not corrected, descriptive): {{ e.global_text }}.</p>
+<p>Largest |{{ e.stat_name }}| = {{ e.peak }} at {{ e.peak_label }}.
+Channels significant at p ≤ {{ alpha }}: {{ e.n_unc }} uncorrected, <span class="sig">{{ e.n_tfce }} after TFCE correction</span>, <span class="sig">{{ e.n_cluster }} in significant clusters</span>.</p>
+<img alt="{{ e.stat_name }} map, TFCE-corrected channels and numbered clusters for {{ e.title }}" src="{{ e.figure }}">
+<h3>Clusters</h3>
+<p class="chans">Clusters are neighbouring channels with {{ e.cluster_threshold }}. The cluster statistic is the cluster <strong>{{ e.cluster_statistic }}</strong>{% if e.cluster_statistic == "mass" %} (sum of F or t² over the cluster, divided by the number of channels){% else %} (number of channels){% endif %}. The numbers match the numbers on the map.</p>
+{% if e.clusters %}
+<table><tr><th>#</th><th>Channels</th><th>{{ e.cluster_statistic|capitalize }}</th><th>p (corrected)</th><th>Direction</th><th>Members</th></tr>
+{% for c in e.clusters %}<tr><td class="num">{{ c.number }}</td><td class="num">{{ c.n }}</td><td class="num">{{ c.statistic }}</td><td class="num{% if c.significant %} sig{% endif %}">{{ c.p }}</td><td>{{ c.direction }}</td><td class="chans">{{ c.labels|join(", ") }}</td></tr>
+{% endfor %}</table>
+{% else %}<p>No cluster formed at the cluster-forming threshold.</p>{% endif %}
+{% if e.tfce_labels %}<details><summary>TFCE-significant channels ({{ e.tfce_labels|length }})</summary><p class="chans">{{ e.tfce_labels|join(", ") }}</p></details>{% endif %}
+{% for pair, why in e.skipped %}<div class="banner"><strong>{{ pair }} was not run:</strong> {{ why }}.</div>
+{% endfor %}{% for ph in e.posthoc %}
+<h3>Post-hoc: {{ ph.title }}</h3>
+<p>Tested on the rows of these two levels only: {{ ph.run_on }}.{% if ph.dropped %} Left out because they have only one of the two levels: {{ ph.dropped|join(", ") }}.{% endif %}</p>
+<p>Channels significant at p ≤ {{ alpha }}: {{ ph.n_unc }} uncorrected, <span class="sig">{{ ph.n_tfce }} after TFCE correction</span>, <span class="sig">{{ ph.n_cluster }} in significant clusters</span>. Each post-hoc contrast is corrected across channels, not across contrasts.</p>
+<img alt="maps for post-hoc contrast {{ ph.title }}" src="{{ ph.figure }}">
+{% endfor %}
+</section>
+{% endfor %}
+
+<footer>
+{{ permutations_text }} Random seed {{ seed }}. p-values are (b + 1) / (N + 1), where b is the number of permutations whose maximum reaches the observed value.
+TFCE: E = 0.5, H = 2, step 0.1. Produced by hdeeg-snpm {{ version }}.
+</footer>
+</main></body></html>

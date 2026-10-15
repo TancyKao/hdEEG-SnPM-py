@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+.DS_Store
+# MATLAB reference outputs, built locally by SnPM_2025/scripts/export_parity_fixtures.m
+parity_fixtures/
+_scratch/

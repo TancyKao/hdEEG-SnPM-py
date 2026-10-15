@@ -1,0 +1,10 @@
+# Paired t-test on the example data shipped with the MATLAB toolbox.
+comparison   = "pairedT"
+tail         = "both"
+channels     = "egi"
+datatype     = "absolute"
+data1_file   = "../../SnPM_2025/example_data/paired_condA.csv"
+data2_file   = "../../SnPM_2025/example_data/paired_condB.csv"
+permutations = 1000
+seed         = 20261013
+output_path  = "../_scratch/example_output"

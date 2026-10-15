@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hdeeg-snpm"
+dynamic = ["version"]
+description = "Permutation statistics (TFCE and cluster correction) for high-density EEG scalp topographies"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Tancy Kao" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.10",
+    "pandas>=2.0",
+    "matplotlib>=3.5",
+    "openpyxl>=3.1",
+    "jinja2>=3.1",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+turtlewave = ["turtlewave-hdeeg>=4.6"]
+dev = ["pytest>=7", "ruff>=0.4", "mne>=1.0"]
+
+[project.scripts]
+snpm = "hdeeg_snpm.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "hdeeg_snpm.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hdeeg_snpm = ["assets/*.npz", "report/templates/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "parity: compares against MATLAB reference fixtures in parity_fixtures/ (skipped if absent)",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
