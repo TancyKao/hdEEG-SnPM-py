@@ -10,7 +10,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import griddata
+from scipy.interpolate import RBFInterpolator
 
 HEAD_RADIUS = 0.60
 
@@ -29,16 +29,21 @@ def topoplot(values, setup, *, ax=None, title="", marks=None, numbers=None, symm
     cluster's centre. Channels with a missing value are left out of the interpolation and
     drawn as open grey circles."""
     values = np.asarray(values, dtype=float)
-    x, y = positions(setup.theta, setup.radius)
-    plot_r = max(float(np.max(setup.radius)), HEAD_RADIUS) * 1.02
+    # Like EEGLAB's squeeze: pull every electrode inward so the outermost one sits on the head
+    # outline, then colour only inside the outline.
+    squeeze = min(1.0, HEAD_RADIUS / float(np.max(setup.radius)))
+    x, y = positions(setup.theta, np.asarray(setup.radius, dtype=float) * squeeze)
+    plot_r = HEAD_RADIUS
     ax = ax or plt.subplots(figsize=(3.6, 3.6))[1]
     ok = np.isfinite(values)
     mesh = None
     if ok.sum() >= 4:
         gx, gy = np.meshgrid(np.linspace(-plot_r, plot_r, grid), np.linspace(-plot_r, plot_r, grid))
-        z = griddata((x[ok], y[ok]), values[ok], (gx, gy), method="cubic")
-        near = griddata((x[ok], y[ok]), values[ok], (gx, gy), method="nearest")
-        z = np.where(np.isnan(z), near, z)
+        # Thin-plate spline, close to EEGLAB's 'v4': smooth to the rim, where a cubic
+        # triangulation stops at the electrode hull and nearest-neighbour fill makes wedges.
+        rbf = RBFInterpolator(np.column_stack([x[ok], y[ok]]), values[ok],
+                              kernel="thin_plate_spline")
+        z = rbf(np.column_stack([gx.ravel(), gy.ravel()])).reshape(gx.shape)
         z[np.hypot(gx, gy) > plot_r] = np.nan
         vmax = np.nanmax(np.abs(values[ok])) or 1.0
         lim = (-vmax, vmax) if symmetric else (float(np.nanmin(values[ok])), float(vmax))
@@ -59,7 +64,7 @@ def topoplot(values, setup, *, ax=None, title="", marks=None, numbers=None, symm
                 bbox={"boxstyle": "circle,pad=0.15", "fc": "w", "ec": "k", "lw": 0.6})
     ax.set_aspect("equal")
     ax.set_xlim(-plot_r * 1.05, plot_r * 1.05)
-    ax.set_ylim(-plot_r * 1.05, plot_r * 1.14)
+    ax.set_ylim(-plot_r * 1.05, plot_r * 1.16)
     ax.axis("off")
     if title:
         ax.set_title(title, fontsize=10)
