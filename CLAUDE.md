@@ -54,6 +54,13 @@ that holds `SnPM_2025`. `tests/data/ce_golden_178.mat` is tracked.
 - The pipeline default is 5000 permutations for every analysis.
 - The HTML report is its own design and is not compared with MATLAB's.
 
+## Project notes
+
+Working notes live in `_scratch/` (git-ignored): `STATE.md` is the current state, `journal.md`
+the dated log.
+
+@_scratch/STATE.md
+
 ## Not ported
 
 Circular phase tier (phase 2), mixed linear model (phase 3), GUI, spectral-power folders, the
