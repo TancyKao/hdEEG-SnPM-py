@@ -11,7 +11,7 @@ import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
-from scipy import stats
+from scipy import linalg, stats
 
 from . import legacy, missing
 from .io import tables
@@ -19,6 +19,49 @@ from .montage import ChannelSetup, get_montage, setup_channels
 
 ALPHA, TFCE_E, TFCE_H = 0.05, 0.5, 2.0
 DEFAULT_PERMUTATIONS = 5000
+
+FL_METHOD = ("Freedman-Lane, approximate: x and y residualized on [1, covariates]; each "
+             "permutation re-projects the permuted EEG residuals off the covariates before "
+             "correlating. Not an exact test.")
+SPEARMAN_CAVEAT = ("Partial Spearman controls the covariates only as far as their relation to "
+                   "the RANKS is linear (data and covariates are ranked, then the covariates are "
+                   "partialled out linearly). A covariate whose effect is linear on the raw "
+                   "scale is not fully removed. Use correlationP or the regression preset when "
+                   "covariate control matters.")
+
+
+class CovariateNoErrorDF(ValueError):
+    """A partial correlation with no error degrees of freedom (n - 2 - k_eff < 1);
+    MATLAB ``snpm:covariateNoErrorDF``."""
+
+
+def _conservative_note(df: int, k_eff: int, n: int) -> str:
+    """Low residual-df caveat (n - 2 - k_eff < 5), the MATLAB text verbatim."""
+    return (f"Only {df} error degrees of freedom remain after partialling out {k_eff} "
+            f"covariate(s) from {n} subjects (n - 2 - covariates < 5). With covariates the "
+            "permutation test is APPROXIMATE (Freedman-Lane). At residual df below 5 the "
+            "per-channel max-statistic family-wise error may be mildly liberal (measured 0.056 "
+            "at nominal 0.05, df 3), while TFCE and cluster inference are conservative. "
+            "Interpret borderline results cautiously.")
+
+
+@dataclass
+class CovariateInfo:
+    """How the covariates were controlled (MATLAB ``results_struct.covariates``)."""
+
+    names: tuple[str, ...]
+    n_covariates: int            # columns supplied
+    k_eff: int                   # rank([1, covariates]) - 1, used in every df statement
+    error_df: int                # n - 2 - k_eff
+    method: str = FL_METHOD
+    spearman_caveat: str = ""
+    conservative_note: str = ""
+
+    def as_dict(self) -> dict:
+        return {"names": list(self.names), "n_covariates": self.n_covariates,
+                "k_eff": self.k_eff, "error_df": self.error_df, "method": self.method,
+                "spearman_caveat": self.spearman_caveat,
+                "conservative_note": self.conservative_note}
 
 
 @dataclass
@@ -34,13 +77,15 @@ class Prepared:
     rule: missing.ChannelRule
     n_analysed: np.ndarray
     threshold: float             # cluster-forming threshold
-    ncov: int = 0
+    ncov: int = 0                        # k_eff: covariate dimensions partialled out
     covariate_names: tuple[str, ...] = ()
     subjects: tuple[str, ...] = ()       # analysed subjects (correlation only)
     behavior_col: str = ""
     notes: list[str] = field(default_factory=list)
     global_interpretable: bool = True
     undefined: np.ndarray | None = None  # t-tests: observed statistic undefined (still permuted)
+    fl: legacy.FLContext | None = None   # partial correlation: Freedman-Lane context
+    covariates: CovariateInfo | None = None
 
     @property
     def excluded(self) -> tuple[np.ndarray, list[str]]:
@@ -146,13 +191,24 @@ def _transform(a, datatype):
     raise ValueError(f"datatype must be 'absolute', 'logscale' or 'normalize', got {datatype!r}")
 
 
-def _residualise(a, Z):
-    """Residuals of each complete column on [1, Z]; columns with a missing value stay NaN."""
+def _residual_forming(Z) -> tuple[np.ndarray, int]:
+    """(Rz, k_eff) of the nuisance design D = [1, Z]: Rz = I - QQ' from a column-pivoted economy
+    QR, rank by MATLAB's tolerance max(size(D)) * eps(max |diag R|), k_eff = rank - 1. A
+    duplicated or dependent covariate then costs nothing and is counted correctly."""
+    n = Z.shape[0]
+    D = np.column_stack([np.ones(n), Z])
+    Q, R, _ = linalg.qr(D, mode="economic", pivoting=True)
+    rdiag = np.abs(np.diag(R))
+    rank = int((rdiag > max(D.shape) * np.spacing(rdiag.max())).sum())
+    Q = Q[:, :rank]
+    return np.eye(n) - Q @ Q.T, rank - 1
+
+
+def _residualise(a, Rz):
+    """Rz a for every complete column; a column with a missing value stays NaN."""
     out = np.full(a.shape, np.nan)
     ok = np.isfinite(a).all(axis=0)
-    if a.shape[0] > Z.shape[1] + 1 and ok.any():
-        D = np.column_stack([np.ones(a.shape[0]), Z])
-        out[:, ok] = a[:, ok] - D @ np.linalg.lstsq(D, a[:, ok], rcond=None)[0]
+    out[:, ok] = Rz @ a[:, ok]
     return out
 
 
@@ -308,15 +364,47 @@ def prepare(params: dict) -> Prepared:
     n_analysed = missing.n_analysed(comparison, x, y)
 
     stat_comparison, ncov = comparison, 0
-    before = None
+    before, fl, cov_info = None, None, None
     if is_corr and cov is not None:
         if comparison == "correlationS":
-            # The rank partial correlation is the linear correlation of rank residuals.
+            # The rank partial correlation is the linear correlation of rank residuals. Ranks are
+            # taken once, here; the Freedman-Lane permutation then runs on the rank residuals
+            # exactly as on raw residuals for Pearson, and never re-ranks.
             x, y, cov = legacy.tiedrank(x), legacy.tiedrank(y), legacy.tiedrank(cov)
             stat_comparison = "correlationP"
+        # Freedman-Lane partial correlation (Method Spec 2026-10-18; Freedman and Lane 1983,
+        # Winkler et al. 2014): one residual-forming matrix of [1, covariates] on the final
+        # analysed rows, both matrices residualised through it, and the engines re-project
+        # every permuted map through it. Permuting x~ against y~ and stopping there (Kennedy)
+        # gave family-wise error up to 0.87 at nominal 0.05.
+        Rz, k_eff = _residual_forming(cov)
+        n_fl = x.shape[0]
+        if k_eff < cov.shape[1]:
+            _note(notes, f"The {cov.shape[1]} covariate column(s) span only {k_eff} "
+                         "dimension(s) beyond the intercept (a duplicated, constant or linearly "
+                         "dependent covariate). The analysis controls for that "
+                         f"{k_eff}-dimensional space and every degrees-of-freedom statement "
+                         f"uses {k_eff} covariate(s).")
+        fl_df = n_fl - 2 - k_eff
+        if fl_df < 1:
+            raise CovariateNoErrorDF(
+                f"Partial correlation with {k_eff} covariate(s) on {n_fl} subjects leaves "
+                f"{fl_df} error degrees of freedom (n - 2 - covariates). It needs at least 1: "
+                "drop covariates or add subjects.")
+        conservative = ""
+        if fl_df < 5:
+            conservative = _conservative_note(fl_df, k_eff, n_fl)
+            _note(notes, conservative)
+        spearman_caveat = SPEARMAN_CAVEAT if comparison == "correlationS" else ""
+        if spearman_caveat:
+            notes.append(spearman_caveat)
         before = (x, y)
-        x, y = _residualise(x, cov), _residualise(y, cov)
-        ncov = cov.shape[1]
+        x, y = _residualise(x, Rz), _residualise(y, Rz)
+        ncov = k_eff
+        fl = legacy.FLContext(Rz, k_eff)
+        cov_info = CovariateInfo(cov_names, cov.shape[1], k_eff, fl_df,
+                                 spearman_caveat=spearman_caveat,
+                                 conservative_note=conservative)
 
     # Channels with nothing to permute are excluded once, here, with a reason. This is decided
     # on the matrices the statistic is computed from, after the missing-data rule.
@@ -362,8 +450,8 @@ def prepare(params: dict) -> Prepared:
                      "subject's channel average is zero after z-scoring, so it correlates "
                      "rounding error. The channel maps are unaffected.")
     return Prepared(comparison, stat_comparison, tail, x, y, setup, rule, n_analysed, threshold,
-                    ncov, cov_names if ncov else (), subjects, behavior_col, notes, interpretable,
-                    undefined)
+                    ncov, cov_names if cov_info else (), subjects, behavior_col, notes,
+                    interpretable, undefined, fl, cov_info)
 
 
 def run_legacy(params: dict, rng: np.random.Generator | None = None,
@@ -380,9 +468,11 @@ def run_legacy(params: dict, rng: np.random.Generator | None = None,
     n_perm = params.get("permutations", DEFAULT_PERMUTATIONS)
     g = legacy.global_test(prep.x, prep.y, prep.stat_comparison, prep.tail, prep.ncov)
     T = legacy.single_threshold_tfce(prep.x, prep.y, prep.setup.graph, prep.stat_comparison,
-                                     prep.tail, ALPHA, n_perm, TFCE_E, TFCE_H, rng, perms_tfce)
+                                     prep.tail, ALPHA, n_perm, TFCE_E, TFCE_H, rng, perms_tfce,
+                                     fl=prep.fl)
     C = legacy.cluster_analysis(prep.x, prep.y, prep.threshold, prep.setup.graph,
-                                prep.stat_comparison, prep.tail, n_perm, rng, perms_cluster)
+                                prep.stat_comparison, prep.tail, n_perm, rng, perms_cluster,
+                                fl=prep.fl)
     return LegacyResults(prep, T, C, g, ALPHA)
 
 

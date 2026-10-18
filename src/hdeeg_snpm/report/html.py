@@ -22,6 +22,17 @@ _METHODS = {
 }
 
 
+def _methods(view) -> str:
+    """The methods paragraph; a partial correlation adds how the covariates were controlled."""
+    text = _METHODS[view.cluster_statistic]
+    cov = view.covariates
+    if cov:
+        text += (f" Covariates ({', '.join(cov['names'])}) were partialled out; covariate rank "
+                 f"k = {cov['k_eff']}, error df n - 2 - k = {cov['error_df']}. Permutation "
+                 f"method: {cov['method']}")
+    return text
+
+
 def _skipped_name(pair: str) -> str:
     """A skipped mixed2way simple effect names itself; anything else is a post-hoc pair."""
     return pair[0].upper() + pair[1:] if pair.startswith("simple effect") else f"Post-hoc {pair}"
@@ -67,7 +78,7 @@ def render(views, setup, params, alpha, seed, notes=(), title=None) -> str:
     return env.get_template("report.html.j2").render(
         title=title or f"hdEEG-SnPM report: {params['comparison']}",
         created=datetime.now().strftime("%Y-%m-%d %H:%M"), montage=setup.system_key,
-        n_channels=len(setup.labels), methods=_METHODS[views[0].cluster_statistic],
+        n_channels=len(setup.labels), methods=_methods(views[0]),
         settings=[(k, params[k]) for k in shown if params.get(k) not in (None, "", [])],
         tail_note=("Left tail: the statistic shown is Data 2 minus Data 1, so the tested "
                    "direction (Data 1 below Data 2) appears as positive values."

@@ -2,7 +2,7 @@
 comparison    = "mixed2way"
 channels      = "egi"
 datatype      = "absolute"
-data_file     = "../../SnPM_2025/example_data/glm_mixed2way_2x3.csv"
+data_file     = "data/glm_mixed2way_2x3.csv"
 meta_cols     = ["Subject", "group", "condition"]
 group_col     = "group"
 condition_col = "condition"

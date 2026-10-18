@@ -1,7 +1,8 @@
 # Run your first analysis
 
-This walks through a paired t-test on the example data that ships with the MATLAB toolbox
-(24 subjects, two conditions, EGI 256 net). It takes about a minute.
+This walks through a paired t-test on the synthetic example data in `examples/data/`
+(24 subjects, two conditions, EGI 256 net, an effect planted around channel E129; the files are
+copied from the MATLAB toolbox's `example_data`). It takes about a minute.
 
 ## 1. Install
 
@@ -16,8 +17,8 @@ comparison   = "pairedT"
 tail         = "both"
 channels     = "egi"
 datatype     = "absolute"
-data1_file   = "../../SnPM_2025/example_data/paired_condA.csv"
-data2_file   = "../../SnPM_2025/example_data/paired_condB.csv"
+data1_file   = "data/paired_condA.csv"
+data2_file   = "data/paired_condB.csv"
 permutations = 1000
 seed         = 20261013
 output_path  = "../_scratch/example_output"

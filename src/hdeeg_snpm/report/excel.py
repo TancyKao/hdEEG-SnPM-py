@@ -36,7 +36,7 @@ def sheets_for(view, labels, alpha) -> dict[str, pd.DataFrame]:
             "Reason": list(view.excluded_reasons)})
     else:
         out["excludedChannels"] = pd.DataFrame({"ChannelLabel": ["None"],
-                                                "Reason": ["All channels evaluable"]})
+                                                "Reason": ["All channels evaluable (no missing data)"]})
     out["uncorrectsigch"] = _sig(sig["uncorrected"], labels)
     out["correctTFCEsigch"] = _sig(sig["tfce"], labels)
     out["correctSnPMsigch"] = _sig(sig["cluster"], labels)

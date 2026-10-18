@@ -55,6 +55,7 @@ def results_summary(views, setup, params, alpha, seed, notes) -> dict:
             "posthoc": [one(p) for p in v.posthoc],
             "run_on": v.run_on, "dropped_subjects": v.dropped,
             "skipped_pairs": [{"pair": k, "reason": why} for k, why in v.skipped],
+            **({"covariates": v.covariates} if v.covariates else {}),
         }
 
     return {"package": "hdeeg-snpm", "version": __version__,

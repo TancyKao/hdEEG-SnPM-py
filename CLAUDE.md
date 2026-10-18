@@ -47,12 +47,29 @@ that holds `SnPM_2025`. `tests/data/ce_golden_178.mat` is tracked.
 
 ## Deliberate differences from MATLAB
 
-- Corrected p-values count a null value as reaching the observed value when the two agree to
-  1e-12 relative (`legacy._at_least`). Known consequence: one channel in one fixture differs
-  from MATLAB by one count (`KNOWN_TIES` in `tests/test_parity_legacy.py`).
+This is the single list; `docs/explanation/parity-with-matlab.md` explains each item and adds
+none of its own.
+
 - Clusters are ordered by smallest p, not by MATLAB's `dmperm` order.
 - The pipeline default is 5000 permutations for every analysis.
 - The HTML report is its own design and is not compared with MATLAB's.
+- A missing value in a group-design column (group, condition, subject, predictor or covariate
+  of `anova1`, `ancova`, `regression`, `rmanova`, `mixed2way`) stops the run and names the
+  column and rows (`glm._no_missing`). MATLAB has no such check: `snpm_glm_design.m` passes the
+  NaN or undefined category into the design matrix. The correlation path agrees with MATLAB
+  (a subject with a missing covariate is dropped with a warning).
+- Excel layout (Tancy, 2026-10-17): significant-channel sheets have one row per channel with
+  index and label (MATLAB: one row of indices); `excludedChannels` names the analysis in the
+  sheet prefix (MATLAB: an `Analysis` column); post-hoc status is in the `contents` sheet (MATLAB:
+  a `posthoc` sheet). Numbers, channel sets and reason texts are identical
+  (`tests/test_parity_workbook.py`).
+- TurtleWave reader (`io/turtlewave.py`) versus the MATLAB repository's `db_to_group_table.py`:
+  a database older than TurtleWave 4.3 has no density in the reader, while the bridge divides by
+  hypnogram time when given `--allow-hypnogram-denominator`; the reader names a subject by the
+  ID stored in the database when there is one, the bridge by the folder name; the reader writes
+  the channels of the band asked for, the bridge every channel seen in any band; a recording in
+  which the band was never detected is an error in the reader and an empty row (with a
+  warning) in the bridge. Explained in `docs/how-to/read-turtlewave-databases.md`.
 
 ## Project notes
 

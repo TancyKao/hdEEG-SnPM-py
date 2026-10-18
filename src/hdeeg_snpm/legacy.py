@@ -226,17 +226,52 @@ class _Unpaired:
         return t, _t_pvalue(t, df, two_sided)
 
 
-class _Correlation:
-    """Pearson or Spearman association: reorder the rows of x against a fixed y."""
+@dataclass(frozen=True)
+class FLContext:
+    """Freedman-Lane context of a partial correlation (``snpm_fl_corr.m``).
 
-    def __init__(self, x, y, spearman):
+    ``Rz`` is the n x n residual-forming matrix I - QQ' of the nuisance design [1, covariates]
+    on the analysed rows, ``k_eff`` its rank minus 1. The engines are then handed the residuals
+    Rz x and Rz y, and every map, observed (identity order) and permuted, is
+    corr(Rz (Rz x)[order], Rz y): the permuted residuals are re-projected off the covariates
+    before correlating. The test is approximate, not exact.
+    """
+
+    Rz: np.ndarray
+    k_eff: int
+
+    @property
+    def error_df(self) -> int:
+        return self.Rz.shape[0] - 2 - self.k_eff
+
+
+class _Correlation:
+    """Pearson or Spearman association: reorder the rows of x against a fixed y.
+
+    With a Freedman-Lane context (partial correlation, Pearson on residuals only) the reordered
+    residuals are re-projected off the covariates before correlating.
+    """
+
+    def __init__(self, x, y, spearman, fl: FLContext | None = None):
         if x.shape != y.shape:
             raise ValueError("correlation needs matrices of the same size")
+        if fl is not None:
+            if spearman:
+                raise ValueError("correlationS takes no Freedman-Lane context: rank data and "
+                                 "covariates first, residualise, and call the engine with "
+                                 "'correlationP'.")
+            if np.shape(fl.Rz) != (x.shape[0], x.shape[0]):
+                raise ValueError(f"Freedman-Lane context must hold an n x n Rz with n = "
+                                 f"{x.shape[0]} subjects.")
         # Read the mask off the raw matrices: ranking maps -Inf to a finite rank.
         self.evaluable = np.all(np.isfinite(x) & np.isfinite(y), axis=0)
         self.x, self.y = (tiedrank(x), tiedrank(y)) if spearman else (x, y)
         self.spearman = spearman
         self.n_subj = x.shape[0]
+        self.fl = fl
+        if fl is not None:
+            # ||x~_c||^2, the zero-variance reference of each column
+            self.v2 = (self.x ** 2).sum(axis=0)
 
     def default_n_perm(self):
         return min(factorial(self.n_subj), 50000)
@@ -245,11 +280,37 @@ class _Correlation:
         return _perm.row_permutations(self.n_subj, n_perm, rng)
 
     def stat(self, row):
-        r = corr_columns(self.x[np.asarray(row, int)], self.y)
+        row = np.asarray(row, int)
+        if self.fl is None:
+            r = corr_columns(self.x[row], self.y)
+        else:
+            r = self._fl_corr(row)
         r[~self.evaluable] = np.nan
         return r
 
+    def _fl_corr(self, row):
+        """corr(Rz x~[row], y~) column-wise; a column whose re-projected permuted residual has
+        no length (zero-variance rule, relative to ||x~_c||^2) scores 0. Masked columns stay NaN
+        and are kept out of the product."""
+        ok = self.evaluable
+        xp = np.full(self.x.shape, np.nan)
+        xp[:, ok] = self.fl.Rz @ self.x[row][:, ok]
+        r = corr_columns(xp, self.y)
+        with np.errstate(invalid="ignore"):
+            zero = ((xp ** 2).sum(axis=0) <= ZERO_SS_RTOL * self.v2) & np.isfinite(self.v2)
+        r[zero] = 0.0
+        return r
+
     def observed(self, two_sided):
+        if self.fl is not None:
+            # The same expression as every permuted map, at the identity order, so the identity
+            # row of a permutation set reproduces it bit for bit. Uncorrected p: partial
+            # correlation df n - 2 - k_eff, t = r sqrt(df / (1 - r^2)).
+            r = self.stat(np.arange(self.n_subj))
+            df = self.fl.error_df
+            with np.errstate(invalid="ignore", divide="ignore"):
+                t = r * np.sqrt(df / (1 - r ** 2))
+            return r, _t_pvalue(t, df, True)
         r = corr_columns(self.x, self.y)
         r[~self.evaluable] = np.nan
         if self.spearman:
@@ -260,7 +321,7 @@ class _Correlation:
         return r, _t_pvalue(t, df, True)
 
 
-def _design(x, y, comparison, tail):
+def _design(x, y, comparison, tail, fl: FLContext | None = None):
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     if comparison not in COMPARISONS:
@@ -269,13 +330,16 @@ def _design(x, y, comparison, tail):
         raise ValueError(f"tail must be 'both', 'left' or 'right', got {tail!r}")
     if tail != "both" and comparison not in ("pairedT", "unpairedT"):
         raise ValueError(f"{comparison} supports tail='both' only")
+    if fl is not None and comparison not in ("correlationP", "correlationS"):
+        raise ValueError(f"A Freedman-Lane context applies to correlationP only, not to "
+                         f"{comparison!r}.")
     if tail == "left":
         x, y = y, x
     if comparison in ("pairedT", "onesampleT"):
         return _Paired(x, y)
     if comparison == "unpairedT":
         return _Unpaired(x, y)
-    return _Correlation(x, y, spearman=comparison == "correlationS")
+    return _Correlation(x, y, spearman=comparison == "correlationS", fl=fl)
 
 
 def _resolve_perms(design, n_perm, rng, perms):
@@ -347,9 +411,13 @@ class MaxStatResult:
 def single_threshold_tfce(x, y, graph: ChannelGraph, comparison: str, tail: str = "both",
                           alpha: float = 0.05, n_perm: int | None = None, E: float = 0.5,
                           H: float = 2.0, rng: np.random.Generator | None = None,
-                          perms=None) -> MaxStatResult:
-    """Per-channel statistic with max-statistic and TFCE family-wise correction."""
-    design = _design(x, y, comparison, tail)
+                          perms=None, fl: FLContext | None = None) -> MaxStatResult:
+    """Per-channel statistic with max-statistic and TFCE family-wise correction.
+
+    ``fl``: Freedman-Lane context for a partial correlation (``x``, ``y`` are then the residuals
+    Rz x, Rz y); ``None`` is the zero-order path.
+    """
+    design = _design(x, y, comparison, tail, fl)
     two_sided = tail == "both"
     perms = _resolve_perms(design, n_perm, rng, perms)
     n = perms.shape[0]
@@ -390,13 +458,15 @@ class ClusterResult:
 
 def cluster_analysis(x, y, threshold: float, graph: ChannelGraph, comparison: str,
                      tail: str = "both", n_perm: int | None = None,
-                     rng: np.random.Generator | None = None, perms=None) -> ClusterResult:
+                     rng: np.random.Generator | None = None, perms=None,
+                     fl: FLContext | None = None) -> ClusterResult:
     """Cluster-size permutation test at a fixed cluster-forming threshold.
 
     Two-sided tests form clusters below ``-threshold`` and above ``+threshold`` separately and
-    score every cluster against the null of the larger of the two maximum sizes.
+    score every cluster against the null of the larger of the two maximum sizes. ``fl`` as in
+    :func:`single_threshold_tfce`.
     """
-    design = _design(x, y, comparison, tail)
+    design = _design(x, y, comparison, tail, fl)
     two_sided = tail == "both"
     thresholds = [-threshold, threshold] if two_sided else [threshold]
     perms = _resolve_perms(design, n_perm, rng, perms)
@@ -442,8 +512,10 @@ def global_test(x, y, comparison: str, tail: str = "both", ncov: int = 0) -> Glo
 
     Every unit of both matrices is averaged over the same channels: those finite in every row of
     both. Averaging each unit over its own available channels makes units measure different
-    things whenever power varies across the scalp. ``ncov`` is the number of covariates already
-    removed by residualisation; the correlation p-value then uses n - 2 - ncov degrees of freedom.
+    things whenever power varies across the scalp. ``ncov`` is the number of covariate dimensions
+    already removed by residualisation (k_eff = rank([1, covariates]) - 1); the correlation
+    p-value then uses n - 2 - ncov degrees of freedom. The test is parametric, so the
+    Freedman-Lane scheme of the maps does not reach it.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)

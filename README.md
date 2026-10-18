@@ -9,16 +9,16 @@ The MATLAB toolbox is the reference: an analysis here counts as validated only o
 the MATLAB statistic maps and corrected p-values on shared inputs using the same permutation
 indices.
 
-**Status: phase 1 in review, not released. Do not use for published inference yet.**
+**Status: v0.1.0 (phase 1), private pre-release. It reproduces the MATLAB toolbox on the parity fixtures; use the MATLAB toolbox for published inference until the public release.**
 
 | Piece | State |
 |---|---|
-| Recording systems (EGI 256 HydroCel, Compumedics 257 Neuvo) | ported |
+| Recording systems (EGI 256 HydroCel, Compumedics 257 Neuvo) | ported; Compumedics checked against MATLAB on anova1, correlationP, pairedT, unpairedT |
 | TFCE and cluster finding | ported; equal to MATLAB on 206 stored maps |
 | Paired, unpaired, one-sample t-tests; Pearson and Spearman correlation with covariates | ported; reproduces MATLAB on 31 reference runs |
 | Group designs: anova1, ancova, regression, rmanova, mixed2way | ported; reproduces MATLAB on 8 reference runs (37 permutation loops) |
-| Results file, Excel workbook, scalp maps, HTML report, `snpm run` | written |
-| TurtleWave `neural_events.db` reader | written |
+| Results file, Excel workbook, scalp maps, HTML report, `snpm run` | written; Excel workbook matches MATLAB's numbers on 9 reference runs |
+| TurtleWave `neural_events.db` reader | written; density checked only in TurtleWave's environment (below) |
 | Circular phase analyses, mixed linear model, GUI, spectral-power folders | not ported |
 
 How agreement with MATLAB is checked, and where the two differ on purpose:
@@ -35,3 +35,11 @@ writes a results file, a summary, an Excel workbook and a self-contained HTML re
 
     uv venv && uv pip install -e ".[dev]"
     .venv/bin/pytest -q
+
+Event density from TurtleWave databases is computed by TurtleWave itself, so its tests are
+skipped in this environment. Before a release, run them in TurtleWave's environment from the
+repository root, with TurtleWave-hdEEG checked out beside this repository:
+
+    PYTHONPATH=src ../TurtleWave-hdEEG/.venv/bin/python -m pytest -q tests/test_turtlewave.py
+
+Every test must pass with none skipped.

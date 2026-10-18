@@ -2,8 +2,15 @@
 
 For each analysis, simulate data with no effect many times, run the permutation test, and count
 how often anything is declared significant at 0.05 (any channel after TFCE correction; any
-cluster). A valid test rejects in about 5% of simulations. Noise is spatially correlated
-(each channel mixed with its neighbours) so that clusters form as they do in real data.
+cluster; for the t-test and correlation tier also any channel after max-statistic correction).
+A valid test rejects in about 5% of simulations. Noise is spatially correlated (each channel
+mixed with its neighbours) so that clusters form as they do in real data.
+
+Correlation with covariates (``correlationP_cov:<n>:<k>``, ``correlationS_cov:<n>:<k>``) uses
+the data model the MATLAB rows were produced with, described in
+docs/explanation/parity-with-matlab.md: for Pearson, standard-normal covariates drive both the
+EEG and the score; for Spearman the covariates are unrelated and everything is ranked. The
+covariates are removed from both sides and the Freedman-Lane engines are run.
 
     python tools/fwe_simulation.py --sims 400 --perms 199 --out _scratch/fwe.csv
 """
@@ -23,7 +30,7 @@ import pandas as pd
 from hdeeg_snpm import glm, legacy, missing
 from hdeeg_snpm.clusters import ChannelGraph
 from hdeeg_snpm.montage import get_montage
-from hdeeg_snpm.pipeline import cluster_threshold
+from hdeeg_snpm.pipeline import _residual_forming, _residualise, cluster_threshold
 
 ALPHA = 0.05
 _M = get_montage("egi")
@@ -38,15 +45,38 @@ def noise(rng, n):
     return rng.standard_normal((n, _NCH)) @ _MIX.T
 
 
-def _legacy(comparison, x, y, rng, n_perm):
+def _legacy(comparison, x, y, rng, n_perm, fl=None):
+    """(max-statistic, TFCE, cluster) rejections."""
     thr = cluster_threshold(comparison, x.shape[0], y.shape[0])
     rule = missing.channel_rule(comparison, x, y)      # as the pipeline does, once, up front
     x, y = x.copy(), y.copy()
     x[:, ~rule.evaluable] = np.nan
     y[:, ~rule.evaluable] = np.nan
-    T = legacy.single_threshold_tfce(x, y, _G, comparison, n_perm=n_perm, rng=rng)
-    C = legacy.cluster_analysis(x, y, thr, _G, comparison, n_perm=n_perm, rng=rng)
-    return np.nanmin(T.p_correctedTFCE) <= ALPHA, min(c.p for c in C.clusters) <= ALPHA
+    T = legacy.single_threshold_tfce(x, y, _G, comparison, n_perm=n_perm, rng=rng, fl=fl)
+    C = legacy.cluster_analysis(x, y, thr, _G, comparison, n_perm=n_perm, rng=rng, fl=fl)
+    return (np.nanmin(T.p_corrected) <= ALPHA, np.nanmin(T.p_correctedTFCE) <= ALPHA,
+            min(c.p for c in C.clusters) <= ALPHA)
+
+
+def _partial_corr(rng, n, k, n_perm, spearman):
+    """Partial correlation under Freedman-Lane, the MATLAB rows' data model. Pearson: the
+    covariates drive both the EEG and the score. Spearman: unrelated covariates (with related
+    ones the rank partial correlation does not remove a raw-scale linear covariate, under any
+    scheme; that is the documented estimand caveat, not a permutation defect)."""
+    Z = rng.standard_normal((n, k))
+    common = rng.standard_normal((n, 1))
+    es = rng.standard_normal(n)
+    if spearman:
+        X = 0.7 * common + noise(rng, n)
+        y = es
+        X, y, Z = legacy.tiedrank(X), legacy.tiedrank(y[:, None])[:, 0], legacy.tiedrank(Z)
+    else:
+        X = Z @ rng.standard_normal((k, _NCH)) * 2 + 0.7 * common + noise(rng, n)
+        y = Z @ rng.standard_normal(k) * 2 + es
+    Rz, k_eff = _residual_forming(Z)
+    xr = _residualise(X, Rz)
+    yr = _residualise(np.repeat(y[:, None], _NCH, axis=1), Rz)
+    return _legacy("correlationP", xr, yr, rng, n_perm, fl=legacy.FLContext(Rz, k_eff))
 
 
 def _glm(preset, Y, meta, rng, n_perm, role="main", **cols):
@@ -54,7 +84,7 @@ def _glm(preset, Y, meta, rng, n_perm, role="main", **cols):
     ctx = glm.fl_context(loop.Y, loop.design)
     ctx = replace(ctx, evaluable=ctx.evaluable & loop.mask)
     r = glm.run_effect(loop.Y, loop.design, _G, n_perm, loop.C, rng, ctx=ctx)
-    return np.nanmin(r.p_correctedTFCE) <= ALPHA, min(c.p for c in r.clusters) <= ALPHA
+    return np.nan, np.nanmin(r.p_correctedTFCE) <= ALPHA, min(c.p for c in r.clusters) <= ALPHA
 
 
 def _long(rng, n_subj, n_cond, groups=None):
@@ -71,6 +101,9 @@ def _long(rng, n_subj, n_cond, groups=None):
 def one(args):
     name, seed, n_perm = args
     rng = np.random.default_rng(seed)
+    if name.startswith(("correlationP_cov:", "correlationS_cov:")):
+        kind, n, k = name.split(":")
+        return _partial_corr(rng, int(n), int(k), n_perm, kind == "correlationS_cov")
     if name == "pairedT":
         return _legacy("pairedT", noise(rng, 20), noise(rng, 20), rng, n_perm)
     if name == "pairedT_missing":       # 20% of cells missing in each condition, at random
@@ -159,7 +192,9 @@ ANALYSES = ["pairedT", "pairedT_missing", "onesampleT", "unpairedT", "unpairedT_
             "mixed2way:condition", "mixed2way:interaction",
             "posthoc:anova1:shift", "posthoc:anova1:spread", "posthoc:ancova:shift",
             "posthoc:ancova:spread", "posthoc:rmanova:shift", "posthoc:rmanova:spread",
-            "mixed2way:condition_crossover", "mixed2way:group_missing_cells"]
+            "mixed2way:condition_crossover", "mixed2way:group_missing_cells",
+            "correlationP_cov:20:3", "correlationP_cov:40:5", "correlationP_cov:12:2",
+            "correlationP_cov:10:4", "correlationS_cov:20:3", "correlationS_cov:40:5"]
 
 
 def main(argv=None):
@@ -179,12 +214,15 @@ def main(argv=None):
         for k, name in enumerate(a.only):
             jobs = [(name, a.seed_offset + 100000 * (ANALYSES.index(name) + 1) + s, a.perms)
                     for s in range(a.sims)]
-            hits = np.array(list(pool.map(one, jobs, chunksize=4)))
-            tfce, clus = hits.mean(axis=0)
+            hits = np.array(list(pool.map(one, jobs, chunksize=4)), dtype=float)
+            mx, tfce, clus = hits.mean(axis=0)     # max-statistic is NaN for the GLM tier
             rows.append({"analysis": name, "sims": a.sims, "perms": a.perms,
+                         "fwe_max": "" if np.isnan(mx) else round(float(mx), 4),
                          "fwe_tfce": round(float(tfce), 4), "fwe_cluster": round(float(clus), 4),
-                         "accept_low": round(ALPHA - half, 4), "accept_high": round(ALPHA + half, 4)})
-            print(f"{name:24s} TFCE {tfce:.3f}  cluster {clus:.3f}   "
+                         "accept_low": round(ALPHA - half, 4), "accept_high": round(ALPHA + half, 4),
+                         "seed_offset": a.seed_offset})
+            shown_max = "  -  " if np.isnan(mx) else f"{mx:.3f}"
+            print(f"{name:24s} max {shown_max}  TFCE {tfce:.3f}  cluster {clus:.3f}   "
                   f"(95% range for a true 0.05: {ALPHA - half:.3f} to {ALPHA + half:.3f})", flush=True)
     with open(a.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))

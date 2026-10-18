@@ -11,7 +11,9 @@ time an event count is divided by lives in one place.
 
 from __future__ import annotations
 
+import ast
 import json
+import os
 import re
 import sqlite3
 import warnings
@@ -89,7 +91,8 @@ def find_recordings(source, subject_from: str = "auto") -> list[Recording]:
     for db in paths:
         if not db.is_file():
             raise FileNotFoundError(db)
-        folder_subject, session = _folder_ids(db.resolve())
+        # abspath, not resolve: a folder of symlinks names its subjects by the links
+        folder_subject, session = _folder_ids(Path(os.path.abspath(db)))
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as con:
             stored = _db_subjects(con)
         if len(stored) > 1:
@@ -149,34 +152,164 @@ def interpolated_channels(path) -> list[str]:
     return list(dict.fromkeys(found))
 
 
-def _stage_token(stage) -> str | None:
-    if stage is None or isinstance(stage, str):
-        return stage
-    return "".join(stage)
+_STAGES = ("NREM1", "NREM2", "NREM3", "Wake", "REM")    # TurtleWave's stage vocabulary
+
+
+def _stage_parts(stage) -> list[str]:
+    """``['NREM2', 'NREM3']``, ``'NREM2'`` or the joint token ``'NREM2NREM3'`` as a list of
+    stages; a token outside the vocabulary (``'Undefined'``) is one part. Mirrors
+    TurtleWave's ``stage_components``."""
+    if stage is None:
+        return []
+    if not isinstance(stage, str):
+        return [str(s) for s in stage]
+    parts, rest = [], stage
+    while rest:
+        hit = next((t for t in _STAGES if rest.startswith(t)), None)
+        if hit is None:
+            return [stage]
+        parts.append(hit)
+        rest = rest[len(hit):]
+    return parts
+
+
+def _covered_tokens(stored, stage) -> list[str]:
+    """The stored stage tokens whose stages all lie inside the request, as TurtleWave's
+    ``stage_tokens_covering`` does for density: ['NREM2', 'NREM3'] covers a joint
+    'NREM2NREM3' run and per-stage 'NREM2' and 'NREM3' runs alike; 'NREM2' alone does not
+    cover 'NREM2NREM3', whose events cannot be split by stage."""
+    want = set(_stage_parts(stage))
+    return [t for t in stored if t is not None and set(_stage_parts(t)) <= want]
+
+
+def _run_scope(con, rec, event_type, method, stage, freq_lower, freq_upper):
+    """The WHERE clause selecting the one detection run a request names, and the stored
+    ``(method, stage, freq_lower, freq_upper)`` rows it covers (empty when no event matches).
+    Two runs covering the request are refused, never pooled: they re-detect the same night."""
+    where, args = ["event_type = ?"], [event_type]
+    for name, value in (("method", method), ("freq_lower", freq_lower),
+                        ("freq_upper", freq_upper)):
+        if value is not None:
+            where.append(f"{name} = ?")
+            args.append(value)
+    if stage is not None:
+        stored = [r[0] for r in con.execute(
+            f"SELECT DISTINCT stage FROM events WHERE {' AND '.join(where)}", args)]
+        tokens = _covered_tokens(stored, stage)
+        where.append(f"stage IN ({', '.join('?' * len(tokens))})" if tokens else "0")
+        args += tokens
+    scope = con.execute("SELECT DISTINCT method, stage, freq_lower, freq_upper FROM events "
+                        f"WHERE {' AND '.join(where)}", args).fetchall()
+    runs = {(m, lo, hi) for m, _, lo, hi in scope}
+    parts = [p for _, t, _, _ in scope for p in _stage_parts(t)]
+    if len(runs) > 1 or (stage is None and len(scope) > 1) or len(parts) > len(set(parts)):
+        raise ValueError(
+            f"{rec.path}: the request matches more than one method, stage or band "
+            f"({scope}); name method, stage, freq_lower and freq_upper so one is selected. "
+            "Stage tokens are pooled only when stage names them and no stage is in two.")
+    return where, args, scope
 
 
 def _sql_measure(rec, measure, event_type, method, stage, freq_lower, freq_upper) -> pd.Series:
     column = {"amplitude": "AVG(peak2peak_amp)", "duration": "AVG(duration)",
               "count": "COUNT(*)"}[measure]
-    where, args = ["event_type = ?"], [event_type]
-    for name, value in (("method", method), ("stage", _stage_token(stage)),
-                        ("freq_lower", freq_lower), ("freq_upper", freq_upper)):
-        if value is not None:
-            where.append(f"{name} = ?")
-            args.append(value)
     with sqlite3.connect(f"file:{rec.path}?mode=ro", uri=True) as con:
-        scope = con.execute("SELECT DISTINCT method, stage, freq_lower, freq_upper FROM events "
-                            f"WHERE {' AND '.join(where)}", args).fetchall()
-        if len(scope) > 1:
-            raise ValueError(
-                f"{rec.path}: the request matches more than one method, stage or band "
-                f"({scope}); name method, stage, freq_lower and freq_upper so one is selected.")
+        where, args, _ = _run_scope(con, rec, event_type, method, stage, freq_lower, freq_upper)
         rows = con.execute(f"SELECT channel, {column} FROM events WHERE {' AND '.join(where)} "
                            "GROUP BY channel", args).fetchall()
     return pd.Series(dict(rows), dtype=float)
 
 
+def _strict_parts(token) -> list[str] | None:
+    """Stages of a token, or None when it is not made of known stages (TurtleWave's
+    ``split_stage_token`` raises there and ``_run_stage_components`` skips the token)."""
+    parts = _stage_parts(token)
+    return parts if all(p in _STAGES for p in parts) else None
+
+
+def _method_matches(stored, wanted) -> bool:
+    """A run's stored method set ('_'-joined for a multi-method run) covers the method asked
+    for. Mirrors TurtleWave's ``density._method_matches``."""
+    return wanted is None or str(stored) == str(wanted) or str(wanted) in str(stored).split("_")
+
+
+def _searched_stages(con, event_type, method, freq_lower, freq_upper) -> list[str]:
+    """The stages the selected run searched, recovered as TurtleWave's
+    ``density._run_stage_components`` does: processing_status for this event type, method and
+    band, else detection_runs.stages, else the stage tokens its events are stored under; joint
+    tokens expand to their stages. Empty when none of the three says."""
+    tables, found = _tables(con), set()
+    if "processing_status" in tables:
+        where, args = ["success = 1", "event_type = ?"], [event_type]
+        for name, value in (("freq_lower", freq_lower), ("freq_upper", freq_upper)):
+            if value is not None:
+                where.append(f"{name} = ?")
+                args.append(float(value))
+        for m, token in con.execute("SELECT DISTINCT method, stage FROM processing_status "
+                                    f"WHERE {' AND '.join(where)}", args):
+            if token and _method_matches(m, method):
+                found.update(_strict_parts(token) or [])
+    if not found and "detection_runs" in tables and \
+            {"event_type", "method", "stages"} <= _columns(con, "detection_runs"):
+        for m, cell in con.execute("SELECT method, stages FROM detection_runs "
+                                   "WHERE event_type = ?", [event_type]):
+            if not cell or not _method_matches(m, method):
+                continue
+            try:
+                value = ast.literal_eval(cell)
+            except (ValueError, SyntaxError):
+                value = cell
+            if isinstance(value, (list, tuple)):
+                found.update(str(v) for v in value)
+            elif isinstance(value, str):
+                found.update(_strict_parts(value) or [])
+    if not found:
+        where, args = ["event_type = ?"], [event_type]
+        for name, value in (("method", method), ("freq_lower", freq_lower),
+                            ("freq_upper", freq_upper)):
+            if value is not None:
+                where.append(f"{name} = ?")
+                args.append(value)
+        for (token,) in con.execute(f"SELECT DISTINCT stage FROM events "
+                                    f"WHERE {' AND '.join(where)}", args):
+            found.update(_stage_parts(token))
+    return _in_order(found)
+
+
+def _in_order(stages) -> list[str]:
+    order = ("NREM1", "NREM2", "NREM3", "REM", "Wake")       # TurtleWave's canonical order
+    return sorted(set(stages), key=lambda s: (order.index(s) if s in order else len(order), s))
+
+
+def _density_scope(rec, event_type, method, stage, freq_lower, freq_upper):
+    """The selected run's method and band, and the stages its density is divided by: the
+    requested stages the run actually searched. A slow-wave run over NREM3 alone, asked for
+    NREM2 and NREM3, is divided by NREM3 time, not by the NREM2 time a spindle run on the same
+    night put into analysed_time. Plain SQL, so a mixed set is refused before TurtleWave runs."""
+    with sqlite3.connect(f"file:{rec.path}?mode=ro", uri=True) as con:
+        if "analysed_time" not in _tables(con):
+            raise ValueError(f"{rec.path} stores no analysed time (it predates TurtleWave 4.3), "
+                             "so it has no density. Amplitude, duration and count still work.")
+        _, _, scope = _run_scope(con, rec, event_type, method, stage, freq_lower, freq_upper)
+        if scope:
+            # The selected run names the method and band, so TurtleWave's roster of channels
+            # that ran and found nothing (processing_status) is that run's, not every method's.
+            method, _, freq_lower, freq_upper = scope[0]
+        searched = _searched_stages(con, event_type, method, freq_lower, freq_upper)
+    if stage is None:
+        return method, freq_lower, freq_upper, searched
+    requested = _in_order(_stage_parts(stage))
+    used = [s for s in requested if s in searched] if searched else requested
+    if not used:
+        raise ValueError(f"{rec.path}: the selected '{event_type}' run searched "
+                         f"{'+'.join(searched)}, none of the requested stages "
+                         f"({'+'.join(requested)}), so it has no density for them.")
+    return method, freq_lower, freq_upper, used
+
+
 def _density(rec, event_type, method, stage, freq_lower, freq_upper) -> pd.Series:
+    """TurtleWave's density for the scope ``_density_scope`` resolved; ``stage`` is the list of
+    stages to divide by (None leaves the scope to TurtleWave)."""
     try:
         from turtlewave_hdEEG.density import event_density
     except ImportError as err:
@@ -184,10 +317,11 @@ def _density(rec, event_type, method, stage, freq_lower, freq_upper) -> pd.Serie
                           "turtlewave-hdeeg (pip install hdeeg-snpm[turtlewave]).") from err
     d = event_density(str(rec.path), event_type=event_type, method=method, stage=stage,
                       freq_lower=freq_lower, freq_upper=freq_upper,
-                      combine_stages=not (stage is None or isinstance(stage, str)))
+                      combine_stages=stage is not None and len(stage) > 1)
     if d["stage"].nunique() > 1 or d["method"].nunique() > 1:
         raise ValueError(f"{rec.path}: density came back for more than one method or stage "
-                         f"({sorted(set(zip(d['method'], d['stage'])))}); name one.")
+                         f"({sorted(set(zip(d['method'], d['stage'])))}); no event in scope "
+                         "selects a run, so name method and stage.")
     return pd.Series(d["density_per_min"].to_numpy(float), index=d["channel"].to_numpy())
 
 
@@ -198,15 +332,23 @@ def event_table(recordings, measure: str, event_type: str, *, method=None, stage
     Returns ``(table, manifest)``. ``table`` has ``Subject`` and ``session`` then the channels;
     a channel with no event is missing for amplitude and duration and 0 for count and density.
     ``manifest`` lists, per recording, the database path, where the subject ID came from and
-    the interpolated channels. With ``drop_interpolated`` those channels are set to missing for
+    the interpolated channels; for density also ``stages``, the stages whose analysed
+    time each density was divided by (the requested stages its run searched; subjects that
+    differ are refused). With ``drop_interpolated`` those channels are set to missing for
     that recording, so the analysis reports them as excluded or tests them on fewer subjects.
     """
     if measure not in MEASURES:
         raise ValueError(f"measure must be one of {MEASURES}")
+    if measure == "density":
+        scopes = [_density_scope(r, event_type, method, stage, freq_lower, freq_upper)
+                  for r in recordings]
+        used = ["+".join(sc[3]) for sc in scopes]
+        _check_stages(recordings, used, stage)
     rows, manifest = [], []
-    for r in recordings:
+    for i, r in enumerate(recordings):
         if measure == "density":
-            values = _density(r, event_type, method, stage, freq_lower, freq_upper)
+            m, lo, hi, stages = scopes[i]
+            values = _density(r, event_type, m, None if stage is None else stages, lo, hi)
         else:
             values = _sql_measure(r, measure, event_type, method, stage, freq_lower, freq_upper)
         if values.empty:
@@ -220,6 +362,9 @@ def event_table(recordings, measure: str, event_type: str, *, method=None, stage
                          "subject_source": r.subject_source,
                          "n_channels_with_events": int(values.notna().sum()),
                          "interpolated_channels": " ".join(interp)})
+    if measure == "density":
+        for row, u in zip(manifest, used):
+            row["stages"] = u
     wide = pd.DataFrame(rows).reset_index(drop=True)
     wide = wide[sorted(wide.columns, key=_natural)]
     if measure == "count":
@@ -231,6 +376,31 @@ def event_table(recordings, measure: str, event_type: str, *, method=None, stage
     wide.insert(0, "session", [r.session for r in recordings])
     wide.insert(0, "Subject", [r.subject for r in recordings])
     return wide, pd.DataFrame(manifest)
+
+
+def _check_stages(recordings, used, stage):
+    """One table, one denominator: refuse subjects whose densities cover different stages, and
+    warn when every subject's run searched fewer stages than were requested."""
+    def who(r):
+        return f"{r.subject} {r.session}".strip()
+    groups: dict[str, list[str]] = {}
+    for r, u in zip(recordings, used):
+        groups.setdefault(u, []).append(who(r))
+    if len(groups) > 1:
+        listed = "; ".join(f"{u or 'none'}: {', '.join(subs)}" for u, subs in groups.items())
+        raise ValueError(
+            "Density would be divided by the time of different stages for different subjects, "
+            f"because their runs searched different stages ({listed}). Values over different "
+            "stages are not comparable; request only the stages every run searched, or redetect "
+            "so the runs match.")
+    if stage is not None and used:
+        requested = "+".join(_in_order(_stage_parts(stage)))
+        if used[0] != requested:
+            warnings.warn(
+                f"Density was requested over {requested} but the selected runs searched only "
+                f"{used[0]}, so it is divided by {used[0]} time for every subject "
+                f"({', '.join(groups[used[0]])}). See the stages column of recordings.csv.",
+                stacklevel=3)
 
 
 def _natural(label: str):
@@ -247,7 +417,9 @@ def write_tables(source, out_dir, event_type: str, measures=("density", "amplitu
     out_dir.mkdir(parents=True, exist_ok=True)
     paths, manifest = {}, None
     for m in measures:
-        table, manifest = event_table(recordings, m, event_type, **scope)
+        table, listed = event_table(recordings, m, event_type, **scope)
+        if manifest is None or m == "density":      # keep the stages column
+            manifest = listed
         paths[m] = out_dir / f"eventStat_{m}_{event_type}.csv"
         table.to_csv(paths[m], index=False)
     paths["recordings"] = out_dir / "recordings.csv"

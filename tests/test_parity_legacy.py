@@ -84,6 +84,12 @@ def test_matches_matlab(case):
     assert prep.stat_comparison == eng["comparison"] and prep.ncov == int(eng["ncov"])
     pu.assert_close(prep.x, eng["data_x"], 1e-10, "engine input x")
     pu.assert_close(prep.y, eng["data_y"], 1e-10, "engine input y")
+    # Freedman-Lane context: present exactly for the covariate cases
+    if "fl_Rz" in eng:
+        assert prep.fl is not None and prep.fl.k_eff == int(eng["k_eff"])
+        pu.assert_close(prep.fl.Rz, eng["fl_Rz"], 1e-10, "Freedman-Lane Rz")
+    else:
+        assert prep.fl is None
     pu.assert_close(prep.threshold, abs(float(eng["cluster_threshold"])), 1e-9, "threshold")
     assert np.array_equal(np.flatnonzero(out.global_.channels_kept),
                           pu.index0(eng["global_channels_kept"]))

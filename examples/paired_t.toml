@@ -1,10 +1,11 @@
-# Paired t-test on the example data shipped with the MATLAB toolbox.
+# Paired t-test on the synthetic example data in examples/data (copied from the MATLAB
+# toolbox's example_data; a 17-channel effect is planted around E129).
 comparison   = "pairedT"
 tail         = "both"
 channels     = "egi"
 datatype     = "absolute"
-data1_file   = "../../SnPM_2025/example_data/paired_condA.csv"
-data2_file   = "../../SnPM_2025/example_data/paired_condB.csv"
+data1_file   = "data/paired_condA.csv"
+data2_file   = "data/paired_condB.csv"
 permutations = 1000
 seed         = 20261013
 output_path  = "../_scratch/example_output"

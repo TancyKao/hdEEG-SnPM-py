@@ -56,19 +56,22 @@ def channel_rule(comparison: str, x: np.ndarray, y: np.ndarray) -> ChannelRule:
     if comparison == "unpairedT":
         n_available = np.isfinite(x).sum(axis=0) + np.isfinite(y).sum(axis=0)
         min_units = max(x.shape[0], y.shape[0]) + 2
-        reason = (f"fewer than {min_units} of the {x.shape[0] + y.shape[0]} subjects are usable, "
-                  "so some relabelling would leave one group with a single subject")
+        reason = (f"degenerate under relabelling: fewer than {min_units} of the "
+                  f"{x.shape[0] + y.shape[0]} subjects are usable, so some group relabelling "
+                  "leaves one group with < 2 subjects and ttest2 returns a finite t from a "
+                  "zero-variance group")
         return _with_why(ChannelRule(n_available >= min_units, n_available, min_units, reason))
     usable = np.isfinite(x) & np.isfinite(y)
     n_available = usable.sum(axis=0)
     if comparison in CORRELATIONS:
         return _with_why(ChannelRule(usable.all(axis=0), n_available, None,
-                                     "missing or non-finite data: the channel is not complete "
-                                     "across every analysed subject"))
+                                     "missing or non-finite data (NaN, +/-Inf): channel not "
+                                     "usable in every analysed subject"))
     if comparison in T_TESTS:
         return _with_why(ChannelRule(n_available >= 2, n_available, 2,
-                                     "fewer than 2 usable pairs, so the t statistic has no "
-                                     "degrees of freedom"))
+                                     "degenerate under relabelling: fewer than 2 usable pairs, "
+                                     "so the paired t has df = 0 and returns +/-Inf for every "
+                                     "sign-flip labelling"))
     raise ValueError(f"no channel rule for comparison {comparison!r}")
 
 

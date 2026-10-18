@@ -17,7 +17,14 @@ take `data1_file` and `data2_file`. Each file is a `Subject` column plus channel
   Data 2 may be a `Subject` column plus one behavioural score; the score is then correlated
   with every channel.
 - For a correlation, add `use_covariates = true` and `covariate_file` (first column the
-  subject ID, then one column per covariate) to remove the covariates from both sides first.
+  subject ID, then one column per covariate) for a partial correlation. Both sides are
+  residualised on the covariates and each permutation re-projects the permuted EEG residuals
+  off them before correlating (Freedman-Lane). This test is approximate, not exact. A subject
+  with a missing covariate value is dropped from the whole analysis with a warning. The run
+  stops when fewer than 1 error degree of freedom is left (n - 2 - covariates), and warns
+  below 5. With `correlationS` the covariates are removed only as far as their relation to the
+  ranks is linear; use `correlationP` or the `regression` preset when covariate control is the
+  point.
 
 The second file is read position by position against the first, so both must list the same
 channels in the same order. The run stops with the mismatched positions named if they do not.

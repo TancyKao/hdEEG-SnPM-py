@@ -51,6 +51,7 @@ class EffectView:
     run_on: str = ""                      # a post-hoc pair: the subjects it used
     dropped: list[str] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)   # tests not run, with reason
+    covariates: dict | None = None        # partial correlation: names, k_eff, error_df, method
 
     def excluded_by_reason(self) -> list[tuple[str, list[int]]]:
         """(reason, channel indices) in order of first appearance."""
@@ -99,7 +100,8 @@ def _legacy_view(res) -> EffectView:
         global_stat=g.stat if prep.global_interpretable else np.nan,
         global_p=g.pval if prep.global_interpretable else np.nan,
         global_n_channels=g.n_channels, n_analysed=prep.n_analysed,
-        n_available=prep.rule.n_available)
+        n_available=prep.rule.n_available,
+        covariates=prep.covariates.as_dict() if prep.covariates else None)
 
 
 def _glm_view(loop, labels, alpha) -> EffectView:

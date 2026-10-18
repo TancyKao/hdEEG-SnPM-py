@@ -10,3 +10,5 @@ dist/
 # MATLAB reference outputs, built locally by SnPM_2025/scripts/export_parity_fixtures.m
 parity_fixtures/
 _scratch/
+# Agent definitions stay local: their leak-sweep lists name local paths and project codes
+.claude/
