@@ -206,10 +206,10 @@ def check_design(spec: LMMSpec, tail: str = "both", meta_columns=None):
 
 def _is_missing(col: pd.Series) -> np.ndarray:
     """NaN, None, a missing category, or an empty / blank string."""
-    miss = pd.isna(col).to_numpy()
+    miss = np.array(pd.isna(col), dtype=bool)   # a writable copy (pandas 3: copy-on-write)
     if not pd.api.types.is_numeric_dtype(col):
         text = col.astype("string").str.strip()
-        miss |= (text == "").fillna(True).to_numpy(dtype=bool)
+        miss = miss | np.array((text == "").fillna(True), dtype=bool)
     return miss
 
 

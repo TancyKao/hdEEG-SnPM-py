@@ -40,7 +40,7 @@ def dense_gls(y, X, groups, tau2, sigma2):
     cov = np.linalg.inv(X.T @ Vi @ X)
     beta = cov @ X.T @ Vi @ y
     r = y - X @ beta
-    loglik = -0.5 * (np.linalg.slogdet(2 * np.pi * V)[1] + r @ Vi @ r)
+    loglik = -0.5 * (y.size * np.log(2 * np.pi) + np.linalg.slogdet(V)[1] + r @ Vi @ r)
     return beta, cov, loglik
 
 
