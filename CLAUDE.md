@@ -33,6 +33,12 @@ nothing may be excluded silently.
 - `tfce.py`, `clusters.py`, `perm.py`: TFCE integral, connected components, permutation indices.
 - `legacy.py`: t-test and correlation engines, whole-head test, MATLAB's Spearman p-value rule.
 - `glm.py`: designs, vectorised least squares, Freedman-Lane, the loop plan of each preset.
+- `circ.py`: circular tier statistics: angle import and zero convention, inversion check,
+  Hotelling T² (observed and permuted), Watson's U², circular-linear F, the per-channel
+  event-count covariate, the Tier-1 linearisation and its provenance stamp, the descriptive panel.
+- `circ_pipeline.py`: circular files to results (`run_circ`): reading and aligning angle, count
+  and measure files, the estimability gate fixed before the loop, the permutation driver, and
+  `tier1_guard`, which `pipeline.py` runs before every non-circular analysis.
 - `missing.py`: which channels can be tested. `pipeline.py`: files to results.
 - `views.py`, `output.py`, `report/`: one description of an effect, then the writers.
 - `io/tables.py`, `io/turtlewave.py`: inputs. `cli.py`: `snpm run config.toml`.
@@ -70,6 +76,12 @@ none of its own.
   the channels of the band asked for, the bridge every channel seen in any band; a recording in
   which the band was never detected is an error in the reader and an empty row (with a
   warning) in the bridge. Explained in `docs/how-to/read-turtlewave-databases.md`.
+- Circular tier, reasons for untested channels: the workbook, the HTML report and
+  `excluded_reasons` in the `.json` give each channel the route that excluded it (fewer than 8
+  subjects per group; log(count) collinear with group; incomplete column under the per-channel
+  covariate), in the wording of the MATLAB parity export. MATLAB's own outputs carry one
+  combined string for every excluded channel (`core_snpm_circ.m`); the `.json` keeps that string
+  word for word as `circular.exclusion_reason`. The channel sets are identical.
 
 ## Project notes
 
@@ -80,5 +92,5 @@ the dated log.
 
 ## Not ported
 
-Circular phase tier (phase 2), mixed linear model (phase 3), GUI, spectral-power folders, the
+Mixed linear model (phase 3), GUI, spectral-power folders, the
 2447-voxel source path.

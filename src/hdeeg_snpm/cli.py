@@ -13,7 +13,8 @@ except ModuleNotFoundError:  # Python 3.10
 
 from . import __version__
 
-_PATH_KEYS = ("data1_file", "data2_file", "data_file", "covariate_file", "output_path")
+_PATH_KEYS = ("data1_file", "data2_file", "data_file", "covariate_file", "count1_file",
+              "count2_file", "output_path")
 
 
 def load_config(path) -> dict:

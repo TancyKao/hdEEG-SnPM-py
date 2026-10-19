@@ -102,6 +102,15 @@ each item on it and adds none.
   the bridge every channel seen in any band. A recording in which the band was never detected
   stops the reader and is an empty row in the bridge. The reasons are in
   [Read TurtleWave databases](../how-to/read-turtlewave-databases.md#compared-with-db_to_group_tablepy).
+- **Reasons for untested channels in the circular tier**: a channel can be left out of a
+  circular analysis for three reasons: fewer than 8 subjects in a group, log(count) collinear
+  with group, or a column with missing angles at a channel that uses the per-channel count
+  covariate. The workbook, the HTML report and `excluded_reasons` in the `.json` file name the
+  reason that applies to each channel, in the words of MATLAB's parity export. MATLAB's own
+  report, workbook and results struct give one combined sentence listing all three reasons for
+  every excluded channel, so a reader cannot tell which one applied. That sentence is kept word
+  for word in the `.json` file as `circular.exclusion_reason`. The set of excluded channels is
+  the same in both programs.
 
 Channels with no variance, and non-finite cells such as the log of zero power, were once listed
 here. MATLAB now handles both the same way (the channel is excluded with a reason; a non-finite
@@ -276,3 +285,73 @@ MATLAB rate applies to it.
 
 Not yet simulated: one-sided tails, and samples small enough for every relabelling to be
 enumerated in the t-tests and correlations without covariates.
+
+### Circular tier (19 October 2026)
+
+The three circular analyses were run through the same simulation, 1000 simulations each with
+199 permutations, on the EGI 178 graph. Each simulation writes synthetic angle, count and
+measure tables to a temporary folder and runs the circular pipeline on them, so the count rule,
+the estimability gate of at least 8 subjects per group, the phase-convention check and the
+channel set are decided exactly as in a real run. This tier has no max-statistic correction, so
+only TFCE and cluster-mass rates are reported.
+
+The data model is the one MATLAB's circular test suite uses. Each subject has an event count at
+each channel, drawn as a group median times exp(0.8 z), rounded and at least 2, where z is
+spatially correlated noise scaled to unit variance (a standard-normal value per channel plus
+half of each neighbour's value). The subject's preferred phase at that channel is zero (the
+slow-oscillation up-state peak) plus a deviation of 30 degrees times sqrt(mean count / count)
+times another independent field of the same kind, wrapped to the circle. Fewer events therefore
+give a noisier angle, which is how event count biases a phase comparison in real data. Angles
+are full-precision radians, so Watson's U² does not refuse them as whole-degree input. No group
+or measure has any effect on the true phase in any row.
+
+- `circ_phase_group`: Hotelling T² on (cos, sin), two groups of 20, median count 40 in both
+  groups, with the per-channel log(count) covariate.
+- `circ_phase_group`, count confound: as above, but median count 50 in one group and 20 in the
+  other, so the angles of the second group are noisier while their true direction is the same.
+  The point-biserial correlation of log count with group is about 0.5 per channel. The row
+  shows the rate with the covariate.
+- `circ_phase_group`, count confound without the covariate: the same data, but the pipeline is
+  given a constant count of 40 for every subject and channel, so the covariate is dropped
+  everywhere and the confound is left uncorrected. This is a negative control, not a calibration
+  check: it shows what the covariate removes.
+- `circ_phase_group`, missing angles: in the front half of the channels every subject's count
+  is 40, so the covariate has no variance there and is not used, and 25% of angle cells are
+  missing at random; those channels are tested with per-channel deletion. The back half keeps
+  variable counts, complete angles and the covariate.
+- `circ_phase_group_u2`: Watson's U², same data as the first row (U² cannot take the covariate).
+- `circ_corrAngLinear`: 30 subjects, angle against an independent standard-normal measure.
+- `circ_corrAngLinear`, missing: 20% of subjects (6 of 30) have no measure and are dropped
+  before the analysis, and 20% of the remaining angle cells are missing at random.
+
+The run is in [fwe_2026-10-19.csv](fwe_2026-10-19.csv).
+
+    python tools/fwe_simulation.py --sims 1000 --perms 199 --workers 16 --only \
+        circ:phase_group circ:phase_group:count_confound circ:phase_group:missing_front \
+        circ:phase_group_u2 circ:corrAngLinear circ:corrAngLinear:missing \
+        circ:tier1_unsigned_unadjusted circ:phase_group:count_confound_unadjusted
+
+| Analysis | TFCE | Cluster |
+|---|---|---|
+| circ_phase_group, counts unrelated to group | 0.050 | 0.051 |
+| circ_phase_group, count differs by group (covariate on) | 0.047 | 0.045 |
+| circ_phase_group, 25% missing angles where the covariate is not used | 0.047 | 0.052 |
+| circ_phase_group_u2 | 0.051 | 0.051 |
+| circ_corrAngLinear | 0.053 | 0.043 |
+| circ_corrAngLinear, 20% missing measure and 20% missing angles | 0.049 | 0.049 |
+| circ_phase_group, count differs by group, covariate off (negative control) | 0.378 | 0.106 |
+
+Every rate except the covariate-off control lies inside the range of 0.036 to 0.064, and none
+of those is above 0.06, so no row needed
+the 4000-simulation repeat. Unlike the t-test and correlation tier, this tier counts the
+identity permutation once, so a rate near 0.05 is attainable, and the cluster statistic is
+mass, not size, so ties are rare; no row sits below the range.
+
+The file also holds one negative control, `circ:tier1_unsigned_unadjusted`. It takes the count
+confound data, turns each angle into its unsigned distance from zero (the Tier-1 linearised
+measure that the pipeline refuses to analyse without a count covariate) and compares the groups
+with an unadjusted unpaired t-test. The rates are 0.774 for the max-statistic, 0.999 for TFCE
+and 0.992 for clusters: the noisier group has larger distances everywhere, which is why the
+refusal exists. MATLAB's figure of 0.280 for this route comes from a design that is not
+recorded with it, so it is not compared; this row is a demonstration that the refusal is needed,
+not a calibration check.

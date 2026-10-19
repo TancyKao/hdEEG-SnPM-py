@@ -34,6 +34,8 @@ def results_arrays(views) -> dict[str, np.ndarray]:
             out[f"{k}/n_analysed"], out[f"{k}/n_available"] = v.n_analysed, v.n_available
         for c in v.clusters:
             out[f"{k}/cluster{c.number}"] = np.asarray(c.channels, dtype=int)
+        for name, a in v.arrays.items():
+            out[f"{k}/{name}"] = np.asarray(a)
     return out
 
 
@@ -56,6 +58,7 @@ def results_summary(views, setup, params, alpha, seed, notes) -> dict:
             "run_on": v.run_on, "dropped_subjects": v.dropped,
             "skipped_pairs": [{"pair": k, "reason": why} for k, why in v.skipped],
             **({"covariates": v.covariates} if v.covariates else {}),
+            **({"circular": v.circular} if v.circular else {}),
         }
 
     return {"package": "hdeeg-snpm", "version": __version__,
@@ -63,7 +66,7 @@ def results_summary(views, setup, params, alpha, seed, notes) -> dict:
             "params": {k: (list(v) if isinstance(v, (list, tuple, np.ndarray)) else v)
                        for k, v in params.items()},
             "seed": seed, "alpha": alpha, "tfce": {"E": pipeline.TFCE_E, "H": pipeline.TFCE_H,
-                                                   "dh": 0.1},
+                                                   "dh": views[0].tfce_dh},
             "montage": setup.system_key, "channels": list(setup.labels),
             "notes": list(notes), "effects": [one(v) for v in views]}
 

@@ -2,7 +2,9 @@
 
 Ports the flow of ``core_snpm_analysis.m``, in its order: read, match subjects (correlation),
 check the two files line up, select channels, transform, drop empty rows, apply the channel rule
-once, residualise on covariates, whole-head test, then the two permutation engines.
+once, residualise on covariates, whole-head test, then the two permutation engines. ``run``
+routes the GLM presets and the circular tier (``circ_pipeline``) as MATLAB's early guards do,
+and the Tier-1 unsigned-measure guard runs before every non-circular analysis.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import linalg, stats
 
-from . import legacy, missing
+from . import circ_pipeline, legacy, missing
 from .io import tables
 from .montage import ChannelSetup, get_montage, setup_channels
 
@@ -222,6 +224,7 @@ def prepare(params: dict) -> Prepared:
     comparison = params["comparison"]
     if comparison not in legacy.COMPARISONS:
         raise ValueError(f"unsupported comparison {comparison!r}")
+    circ_pipeline.tier1_guard(params)
     tail = params.get("tail", "both")
     datatype = params.get("datatype", "absolute")
     system = params.get("channels", "egi")
@@ -520,6 +523,7 @@ def prepare_glm(params: dict):
     preset = params["comparison"].lower()
     if preset not in GLM_PRESETS:
         raise ValueError(f"unsupported preset {preset!r}")
+    circ_pipeline.tier1_guard(params)
     meta_cols = [str(c) for c in np.atleast_1d(params.get("meta_cols", []))]
     if not meta_cols:
         raise ValueError("params['meta_cols'] must list the non-channel columns.")
@@ -582,6 +586,11 @@ def run(params: dict, rng: np.random.Generator | None = None):
     if n_perm is not None and (int(n_perm) != n_perm or n_perm < 20):
         raise ValueError(f"permutations must be a whole number of at least 20, got {n_perm!r}; "
                          "with fewer, no p-value can reach 0.05.")
-    if params["comparison"] in legacy.COMPARISONS:
+    comparison = params["comparison"]
+    if comparison in circ_pipeline.RETIRED:
+        raise ValueError(circ_pipeline.retired_message(comparison))
+    if comparison in circ_pipeline.COMPARISONS:
+        return circ_pipeline.run_circ(params, rng)
+    if comparison in legacy.COMPARISONS:
         return run_legacy(params, rng)
     return run_glm(params, rng)

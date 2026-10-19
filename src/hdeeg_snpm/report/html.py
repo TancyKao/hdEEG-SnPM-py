@@ -24,6 +24,8 @@ _METHODS = {
 
 def _methods(view) -> str:
     """The methods paragraph; a partial correlation adds how the covariates were controlled."""
+    if view.methods:
+        return view.methods
     text = _METHODS[view.cluster_statistic]
     cov = view.covariates
     if cov:
@@ -52,6 +54,12 @@ def _effect_context(view, setup, alpha):
         "excluded_labels": [labels[i] for i in view.excluded],
         "excluded_groups": [(r, [labels[i] for i in idx]) for r, idx in view.excluded_by_reason()],
         "global_text": view.global_text, "global_n_channels": view.global_n_channels,
+        "cluster_note": ("(number of channels)" if view.cluster_statistic == "size" else
+                         "(sum of F or t² over the cluster, divided by the number of channels)"
+                         if view.stat_name in ("F", "t") and not view.circular else
+                         f"(sum of {view.stat_name} over the cluster, divided by the number of "
+                         "channels)"),
+        "descriptive": (view.circular or {}).get("descriptive"),
         "peak": "n/a" if peak is None else f"{abs(view.stat[peak]):.3f}",
         "peak_label": "n/a" if peak is None else labels[peak],
         "n_unc": len(sig["uncorrected"]), "n_tfce": len(sig["tfce"]), "n_cluster": len(sig["cluster"]),
@@ -73,8 +81,9 @@ def render(views, setup, params, alpha, seed, notes=(), title=None) -> str:
                       autoescape=select_autoescape(["html", "j2"]))
     n_perm = sorted({v.n_permutations for v in views})
     shown = ("comparison", "tail", "datatype", "data1_file", "data2_file", "data_file",
-             "covariate_file", "group_col", "condition_col", "subject_col", "predictor_col",
-             "covariate_cols")
+             "covariate_file", "count1_file", "count2_file", "circ_units", "circ_convention",
+             "circ_zero_offset_deg", "measure_col", "group_col", "condition_col", "subject_col",
+             "predictor_col", "covariate_cols")
     return env.get_template("report.html.j2").render(
         title=title or f"hdEEG-SnPM report: {params['comparison']}",
         created=datetime.now().strftime("%Y-%m-%d %H:%M"), montage=setup.system_key,
@@ -87,4 +96,5 @@ def render(views, setup, params, alpha, seed, notes=(), title=None) -> str:
         # skipped pairs and left-out subjects are stated under their own effect
         notes=[n for n in notes if not n.startswith(("Post-hoc ", "Simple effect "))], alpha=f"{alpha:g}", seed=seed, version=__version__,
         permutations_text=f"{' / '.join(str(n) for n in n_perm)} permutations per test.",
+        tfce_dh=f"{views[0].tfce_dh:g}",
         effects=[_effect_context(v, setup, alpha) for v in views])

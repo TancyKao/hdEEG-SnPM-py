@@ -23,7 +23,8 @@ CASES = [
     "compu_unpairedT", "compu_correlationP", "miss_pairedT_scattered",
     "miss_correlationP_scattered", "miss_unpairedT_group_channel", "miss_correlationP_cov_nan",
     "exact_correlationS_n7", "exact_correlationS_n7_ties", "correlationS_ties_n30",
-    "pairedT_logscale", "correlationP_normalize",
+    "pairedT_logscale", "correlationP_normalize", "miss_correlationP_cov_eeg_nan",
+    "exact_correlationP_n5_cov",
 ]
 
 

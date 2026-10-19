@@ -5,7 +5,7 @@ The same keys are used in a TOML file for `snpm run` and in the dictionary passe
 
 | Key | Values | Default | Meaning |
 |---|---|---|---|
-| `comparison` | `pairedT`, `unpairedT`, `onesampleT`, `correlationP`, `correlationS`, `anova1`, `ancova`, `regression`, `rmanova`, `mixed2way` | required | the analysis |
+| `comparison` | `pairedT`, `unpairedT`, `onesampleT`, `correlationP`, `correlationS`, `anova1`, `ancova`, `regression`, `rmanova`, `mixed2way`, `circ_phase_group`, `circ_phase_group_u2`, `circ_corrAngLinear` | required | the analysis |
 | `tail` | `both`, `left`, `right` | `both` | `left` and `right` exist for `pairedT` and `unpairedT` only. For `left` the reported statistic has the sign of Data 2 minus Data 1, as in MATLAB |
 | `channels` | `egi`, `compu` | `egi` | recording system: EGI 256 HydroCel (178 scalp channels analysed) or Compumedics 257 Neuvo (249) |
 | `datatype` | `absolute`, `logscale`, `normalize` | `absolute` | no transform, log10, or z-score across channels within each subject |
@@ -18,7 +18,18 @@ The same keys are used in a TOML file for `snpm run` and in the dictionary passe
 | `data_file` | path | | the single file of a group design |
 | `meta_cols` | list of column names | required for group designs | columns that are not channels |
 | `group_col`, `condition_col`, `subject_col`, `predictor_col`, `covariate_cols` | column names | | roles of the design columns |
+| `circ_units` | `rad`, `deg` | required for circular analyses, no default | units of the angle files |
+| `circ_convention` | `literature_uppeak0`, `yasa_uppeak0`, `luna_zerocross0`, `turtlewave_pre_v4`, `custom` | required for circular analyses, no default | where the exported angle puts zero |
+| `circ_zero_offset_deg` | number | | rotation in degrees for `custom` |
+| `count1_file`, `count2_file`, `count1_sheet`, `count2_sheet` | path, sheet name | | event counts per group, required for `circ_phase_group` and `circ_phase_group_u2` |
+| `measure_col` | column name | the only column | the measure of `circ_corrAngLinear` |
+| `circ_count_covariate_mode` | `per_channel`, `per_subject` | `per_channel` | how log(event count) enters the circular group analyses |
+| `circ_collinearity_max` | number | 0.8 | largest \|point-biserial r(log count, group)\| at which a channel is still tested |
+| `circ_count_col` | column name | a covariate whose name contains `count` | the event-count covariate the Tier-1 guard looks for |
 
-Fixed settings: significance level 0.05; TFCE with E = 0.5, H = 2 and step 0.1.
+Fixed settings: significance level 0.05; TFCE with E = 0.5, H = 2 and step 0.1 (0.005 for
+`circ_phase_group_u2`). The circular analyses accept only `tail = "both"` and
+`datatype = "absolute"`. How the circular keys are used:
+[Run a circular (phase) analysis](../how-to/run-a-circular-analysis.md).
 
 Command line overrides: `snpm run file.toml --permutations 10000 --seed 1`.

@@ -44,17 +44,22 @@
 {% if e.excluded_labels %}<div class="banner"><strong>{{ e.excluded_labels|length }} channel(s) were not tested.</strong>
 {% for reason, chans in e.excluded_groups %}<br>{{ reason[0]|upper }}{{ reason[1:] }} ({{ chans|length }}): {{ chans|join(", ") }}.{% endfor %}</div>{% endif %}
 {% if mixed and e.key == "condition" %}<p>The condition main effect is the condition effect averaged across groups with equal weight per group, as in a standard mixed analysis of variance. With unequal group sizes this is not the average over subjects.</p>{% endif %}
-<p><strong>Whole-head test</strong> (channel average over {{ e.global_n_channels }} channels, not corrected, descriptive): {{ e.global_text }}.</p>
+{% if e.global_text %}<p><strong>Whole-head test</strong> (channel average over {{ e.global_n_channels }} channels, not corrected, descriptive): {{ e.global_text }}.</p>{% endif %}
 <p>Largest |{{ e.stat_name }}| = {{ e.peak }} at {{ e.peak_label }}.
 Channels significant at p ≤ {{ alpha }}: {{ e.n_unc }} uncorrected, <span class="sig">{{ e.n_tfce }} after TFCE correction</span>, <span class="sig">{{ e.n_cluster }} in significant clusters</span>.</p>
 <img alt="{{ e.stat_name }} map, TFCE-corrected channels and numbered clusters for {{ e.title }}" src="{{ e.figure }}">
 <h3>Clusters</h3>
-<p class="chans">Clusters are neighbouring channels with {{ e.cluster_threshold }}. The cluster statistic is the cluster <strong>{{ e.cluster_statistic }}</strong>{% if e.cluster_statistic == "mass" %} (sum of F or t² over the cluster, divided by the number of channels){% else %} (number of channels){% endif %}. The numbers match the numbers on the map.</p>
+<p class="chans">Clusters are neighbouring channels with {{ e.cluster_threshold }}. The cluster statistic is the cluster <strong>{{ e.cluster_statistic }}</strong> {{ e.cluster_note }}. The numbers match the numbers on the map.</p>
 {% if e.clusters %}
 <table><tr><th>#</th><th>Channels</th><th>{{ e.cluster_statistic|capitalize }}</th><th>p (corrected)</th><th>Direction</th><th>Members</th></tr>
 {% for c in e.clusters %}<tr><td class="num">{{ c.number }}</td><td class="num">{{ c.n }}</td><td class="num">{{ c.statistic }}</td><td class="num{% if c.significant %} sig{% endif %}">{{ c.p }}</td><td>{{ c.direction }}</td><td class="chans">{{ c.labels|join(", ") }}</td></tr>
 {% endfor %}</table>
 {% else %}<p>No cluster formed at the cluster-forming threshold.</p>{% endif %}
+{% if e.descriptive %}<h3>Descriptive circular summary (no inference)</h3>
+<table><tr><th>Group</th><th>Angles</th><th>Mean direction (deg)</th><th>Circular SD (deg)</th><th>R</th><th>Rayleigh z</th><th>Rayleigh p</th></tr>
+{% for g in e.descriptive.group %}<tr><td>{{ g.label }}</td><td class="num">{{ g.n }}</td><td class="num">{{ "%.1f"|format(g.mean_deg) }}</td><td class="num">{{ "%.1f"|format(g.sd_deg) }}</td><td class="num">{{ "%.3f"|format(g.R) }}</td><td class="num">{{ "%.2f"|format(g.rayleigh_z) }}</td><td class="num">{{ "%.3g"|format(g.rayleigh_p) }}</td></tr>
+{% endfor %}</table>
+<p class="chans">Pooled over the {{ e.descriptive.n_channels }} tested channels. {{ e.descriptive.note }}</p>{% endif %}
 {% if e.tfce_labels %}<details><summary>TFCE-significant channels ({{ e.tfce_labels|length }})</summary><p class="chans">{{ e.tfce_labels|join(", ") }}</p></details>{% endif %}
 {% for pair, why in e.skipped %}<div class="banner"><strong>{{ pair }} was not run:</strong> {{ why }}.</div>
 {% endfor %}{% for ph in e.posthoc %}
@@ -68,6 +73,6 @@ Channels significant at p ≤ {{ alpha }}: {{ e.n_unc }} uncorrected, <span clas
 
 <footer>
 {{ permutations_text }} Random seed {{ seed }}. p-values are (b + 1) / (N + 1), where b is the number of permutations whose maximum reaches the observed value.
-TFCE: E = 0.5, H = 2, step 0.1. Produced by hdeeg-snpm {{ version }}.
+TFCE: E = 0.5, H = 2, step {{ tfce_dh }}. Produced by hdeeg-snpm {{ version }}.
 </footer>
 </main></body></html>

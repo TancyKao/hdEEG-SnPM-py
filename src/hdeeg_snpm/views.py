@@ -52,6 +52,10 @@ class EffectView:
     dropped: list[str] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)   # tests not run, with reason
     covariates: dict | None = None        # partial correlation: names, k_eff, error_df, method
+    tfce_dh: float = 0.1                  # TFCE integration step
+    methods: str = ""                     # methods paragraph, when the tier writes its own
+    circular: dict | None = None          # circular tier: import, gate, descriptive panel, ...
+    arrays: dict = field(default_factory=dict)   # extra per-channel arrays for the results file
 
     def excluded_by_reason(self) -> list[tuple[str, list[int]]]:
         """(reason, channel indices) in order of first appearance."""
@@ -127,8 +131,100 @@ def _glm_view(loop, labels, alpha) -> EffectView:
         run_on=loop.units, dropped=list(loop.dropped), skipped=list(loop.skipped))
 
 
+_CIRC_METHODS = {
+    "circ_phase_group": (
+        "At each channel the two groups' preferred phases were compared with a two-sample "
+        "Hotelling T² test on the (cos, sin) embedding of the angle, adjusted for log(event "
+        "count) at that channel where the count varies. Significance was corrected across "
+        "channels by permutation of residuals (Freedman-Lane on the stacked cos and sin "
+        "response, one row index for both)"),
+    "circ_phase_group_u2": (
+        "At each channel the two groups' phase distributions were compared with Watson's "
+        "two-sample U² test, which cannot adjust for event count. Significance was corrected "
+        "across channels by permutation of the group labels against the fixed angles"),
+    "circ_corrAngLinear": (
+        "At each channel the association between the angle and the linear measure was tested "
+        "with the circular-linear F of the measure on [1, cos, sin]. Significance was corrected "
+        "across channels by permuting the measure (Freedman-Lane with the intercept as the only "
+        "nuisance) against the fixed angles"),
+}
+
+
+def _plain(v):
+    """JSON-ready copy: numpy scalars and arrays to Python types."""
+    if isinstance(v, dict):
+        return {k: _plain(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_plain(x) for x in v]
+    if isinstance(v, np.ndarray):
+        return [_plain(x) for x in v.tolist()]
+    if isinstance(v, np.generic):
+        return v.item()
+    return v
+
+
+def _circ_view(res) -> EffectView:
+    from .circ import mean_direction_deg
+    from .circ_pipeline import CLUSTER_STATISTIC, EXCLUSION_REASON, STAT_LABELS, effect_label
+
+    prep, r, labels = res.prepared, res.result, res.setup.labels
+    name = "U2" if prep.comparison == "circ_phase_group_u2" else "F"
+    clusters = [ClusterView(0, c.channels, [labels[i] for i in c.channels], float(c.mass), c.p)
+                for c in r.clusters if c.channels.size]
+    imp = prep.imp
+    methods = (_CIRC_METHODS[prep.comparison] + ", in two ways: threshold-free cluster "
+               "enhancement (TFCE) with the maximum enhanced value over channels as the null, and "
+               "a cluster test whose statistic is the cluster mass (sum of the statistic over the "
+               "cluster divided by the number of channels; FieldTrip's maxsize, used by Helfrich "
+               f"et al., differs). Angles were declared in {imp['units']} with zero convention "
+               f"{imp['convention']}; a rotation of {imp['rotation_deg']:+.1f} deg was applied so "
+               "that 0 is the slow-oscillation up-state peak. "
+               + ("A channel is tested only with at least 8 subjects per group, a count not "
+                  "collinear with group and, where the count covariate is used, no missing angle"
+                  if prep.is_group else
+                  "A channel is tested only with at least 8 subjects with both an angle and the "
+                  "measure")
+               + "; that set is fixed before the first permutation. There is no whole-head test "
+               "for angles; the panel below is descriptive only.")
+    inv = dict(prep.inversion, channels=[labels[i] for i in prep.inversion["channels"]])
+    cov = {k: v for k, v in prep.covariate.items() if k != "pb"}
+    circular = _plain({
+        "comparison": prep.comparison, "statistic": prep.statistic,
+        "statistic_label": STAT_LABELS[prep.comparison], "effect_label": effect_label(prep),
+        "import": imp, "rotation_deg": imp["rotation_deg"], "convention": imp["convention"],
+        "units": imp["units"], "covariate": cov, "gate_min_per_group": 8,
+        "cluster_statistic": CLUSTER_STATISTIC, "exclusion_reason": EXCLUSION_REASON,
+        "n_group1": prep.n1g, "n_group2": prep.n2g, "measure_col": prep.measure_col,
+        **({} if prep.is_group else {"measure_nan_removed": prep.measure_nan_removed,
+                                     "dropped_subjects": list(prep.dropped_subjects)}),
+        "subjects": list(prep.subjects), "perm_type": res.engine.perm_type,
+        "inversion_check": inv, "descriptive": res.descriptive,
+        "whole_head_test": "none (deliberate: no valid whole-head mean of angles)"})
+    # mean direction per channel (degrees): group A then group B, or all subjects
+    mean_dir = (np.vstack([mean_direction_deg(prep.A[prep.gi == 1]),
+                           mean_direction_deg(prep.A[prep.gi == 0])])
+                if prep.is_group else mean_direction_deg(prep.A)[None, :])
+    arrays = {"evaluable": prep.evaluable, "usecov": prep.usecov, "collinear": prep.collinear,
+              "n_finite": prep.n_finite, "mean_direction_deg": mean_dir}
+    if prep.is_group:
+        arrays.update(n_group1=prep.n_group1, n_group2=prep.n_group2,
+                      point_biserial=prep.covariate["pb"])
+    if res.engine.rho is not None:
+        arrays["rho"] = res.engine.rho
+    return EffectView(
+        key="main", title=f"{prep.comparison}: {STAT_LABELS[prep.comparison]}", stat_name=name,
+        stat=r.real_T, p_uncorrected=r.p_real, tfce=r.real_TFCE, p_tfce=r.p_correctedTFCE,
+        cluster_statistic="mass", cluster_threshold=f"uncorrected p < {res.alpha:g}",
+        clusters=_number(clusters), n_permutations=r.n_perm, excluded=prep.excluded,
+        excluded_reasons=list(prep.excluded_reasons), global_text="", global_n_channels=0,
+        n_analysed=prep.per_channel_n, n_available=np.isfinite(prep.A_imported).sum(axis=0),
+        tfce_dh=prep.tfce_dh, methods=methods, circular=circular, arrays=arrays)
+
+
 def effect_views(results) -> list[EffectView]:
     """Top-level effects in run order, each carrying its post-hoc contrasts."""
+    if getattr(results, "tier", "") == "circ":
+        return [_circ_view(results)]
     if hasattr(results, "prepared"):
         return [_legacy_view(results)]
     labels, views = results.setup.labels, []

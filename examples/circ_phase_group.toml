@@ -1,0 +1,15 @@
+# Two-group preferred-phase comparison (Hotelling T^2 on the cos/sin embedding, adjusted for
+# log(event count) per channel) on the synthetic example data in examples/data, copied from the
+# MATLAB toolbox's example_data: 16 + 16 subjects, a mean-direction shift planted near E129.
+# Angle units and the zero convention are required and have no default.
+comparison      = "circ_phase_group"
+channels        = "egi"
+data1_file      = "data/circ_phase_groupA.csv"
+data2_file      = "data/circ_phase_groupB.csv"
+count1_file     = "data/circ_phase_countsA.csv"
+count2_file     = "data/circ_phase_countsB.csv"
+circ_units      = "rad"
+circ_convention = "literature_uppeak0"
+permutations    = 1000
+seed            = 20261013
+output_path     = "../_scratch/example_output"

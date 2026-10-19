@@ -12,6 +12,14 @@ docs/explanation/parity-with-matlab.md: for Pearson, standard-normal covariates 
 EEG and the score; for Spearman the covariates are unrelated and everything is ranked. The
 covariates are removed from both sides and the Freedman-Lane engines are run.
 
+The circular tier (``circ:*`` rows) uses the data model of MATLAB's ``test_circ_snpm.m``: each
+subject's event count per channel is log-normal around a group median, and the angle's spread
+around the up-state peak (zero) shrinks as one over the square root of the count, so fewer events
+give a noisier angle. Both the log count and the angle deviation are spatially correlated. The
+rows write the synthetic tables to a temporary folder and run ``circ_pipeline.run_circ``, so the
+count rule, the estimability gate, the convention check and the channel set are the pipeline's
+own. There is no max-statistic correction in this tier.
+
     python tools/fwe_simulation.py --sims 400 --perms 199 --out _scratch/fwe.csv
 """
 
@@ -20,6 +28,8 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
+import tempfile
+import warnings
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -27,7 +37,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from hdeeg_snpm import glm, legacy, missing
+from hdeeg_snpm import circ, circ_pipeline, glm, legacy, missing
 from hdeeg_snpm.clusters import ChannelGraph
 from hdeeg_snpm.montage import get_montage
 from hdeeg_snpm.pipeline import _residual_forming, _residualise, cluster_threshold
@@ -98,9 +108,112 @@ def _long(rng, n_subj, n_cond, groups=None):
     return Y, meta
 
 
+_UNIT = np.sqrt((_MIX ** 2).sum(axis=1))      # sd of each channel of noise()
+_LABELS = list(_M.labels)
+
+
+def unit_noise(rng, n):
+    """Spatially correlated noise with unit variance at every channel."""
+    return noise(rng, n) / _UNIT
+
+
+def _counts_angles(rng, n, median, mean_count=40.0, sd_deg=30.0):
+    """test_circ_snpm.m's fixture: log-normal counts; angle spread ~ 1 / sqrt(count)."""
+    cnt = np.maximum(2, np.round(median * np.exp(0.8 * unit_noise(rng, n))))
+    sd = np.radians(sd_deg) * np.sqrt(mean_count) / np.sqrt(cnt)
+    return cnt, np.mod(sd * unit_noise(rng, n), 2 * np.pi)
+
+
+def _csv(folder, name, ids, M, cols):
+    t = pd.DataFrame(M, columns=cols)
+    t.insert(0, "Subject", ids)
+    path = Path(folder) / name
+    t.to_csv(path, index=False)
+    return str(path)
+
+
+def _run_circ(rng, n_perm, comparison, tables):
+    """Write the tables, run the circular pipeline, return (max, TFCE, cluster) rejections."""
+    with tempfile.TemporaryDirectory() as d, warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        params = {"comparison": comparison, "channels": "egi", "circ_units": "rad",
+                  "circ_convention": "literature_uppeak0", "permutations": n_perm}
+        for key, (ids, M, cols) in tables.items():
+            params[key] = _csv(d, f"{key}.csv", ids, M, cols)
+        r = circ_pipeline.run_circ(params, rng=rng).result
+    return (np.nan, np.nanmin(r.p_correctedTFCE) <= ALPHA,
+            min(c.p for c in r.clusters) <= ALPHA)
+
+
+def _circ_group(rng, n_perm, comparison, med_a=40.0, med_b=40.0, n_a=20, n_b=20,
+                miss_front=0.0, unadjusted=False):
+    """Two independent groups with the same true phase distribution. ``med_a != med_b`` makes
+    the count differ by group (the confound). ``miss_front`` removes that fraction of angle cells
+    in the front half of the channels, where every subject's count is fixed at 40 so the
+    per-channel covariate is not used there. ``unadjusted`` draws the angles from the real counts
+    but hands the pipeline a constant count of 40, so the covariate is dropped at every channel:
+    the confound, uncorrected."""
+    ca, aa = _counts_angles(rng, n_a, med_a, (med_a + med_b) / 2)
+    cb, ab = _counts_angles(rng, n_b, med_b, (med_a + med_b) / 2)
+    C, A = np.vstack([ca, cb]), np.vstack([aa, ab])
+    if miss_front:
+        front = np.arange(_NCH // 2)
+        C[:, front] = 40
+        A[:, front] = np.mod(np.radians(30) * unit_noise(rng, n_a + n_b)[:, front], 2 * np.pi)
+        A[:, front] =np.where(rng.random((n_a + n_b, front.size)) < miss_front, np.nan,
+                               A[:, front])
+    if unadjusted:
+        C = np.full(C.shape, 40.0)
+    ids_a = [f"sub{i + 1:03d}" for i in range(n_a)]
+    ids_b = [f"sub{i + 101:03d}" for i in range(n_b)]
+    return _run_circ(rng, n_perm, comparison, {
+        "data1_file": (ids_a, A[:n_a], _LABELS), "data2_file": (ids_b, A[n_a:], _LABELS),
+        "count1_file": (ids_a, C[:n_a], _LABELS), "count2_file": (ids_b, C[n_a:], _LABELS)})
+
+
+def _circ_anglinear(rng, n_perm, n=30, miss_y=0.0, miss_a=0.0):
+    """Angle and an unrelated linear measure, paired by subject; optional missing cells."""
+    _, A = _counts_angles(rng, n, 40.0)
+    y = rng.standard_normal(n)
+    if miss_y:
+        y[rng.choice(n, round(miss_y * n), replace=False)] = np.nan
+    if miss_a:
+        A[rng.random(A.shape) < miss_a] = np.nan
+    ids = [f"sub{i + 1:03d}" for i in range(n)]
+    return _run_circ(rng, n_perm, "circ_corrAngLinear", {
+        "data1_file": (ids, A, _LABELS), "data2_file": (ids, y[:, None], ["measure"])})
+
+
+def _tier1_unsigned(rng, n_perm, n_a=20, n_b=20):
+    """Negative control: the Tier-1 unsigned linearised measure (|angle - 0|) compared between
+    groups whose event counts differ, with no count adjustment. The guard refuses this run in the
+    pipeline; it is simulated here to show why."""
+    _, aa = _counts_angles(rng, n_a, 50.0, 35.0)
+    _, ab = _counts_angles(rng, n_b, 20.0, 35.0)
+    Y, _ = circ.linearise(np.vstack([aa, ab]), "unsigned")
+    return _legacy("unpairedT", Y[:n_a], Y[n_a:], rng, n_perm)
+
+
 def one(args):
     name, seed, n_perm = args
     rng = np.random.default_rng(seed)
+    if name == "circ:phase_group":
+        return _circ_group(rng, n_perm, "circ_phase_group")
+    if name == "circ:phase_group:count_confound":
+        return _circ_group(rng, n_perm, "circ_phase_group", med_a=50.0, med_b=20.0)
+    if name == "circ:phase_group:count_confound_unadjusted":
+        return _circ_group(rng, n_perm, "circ_phase_group", med_a=50.0, med_b=20.0,
+                           unadjusted=True)
+    if name == "circ:phase_group:missing_front":
+        return _circ_group(rng, n_perm, "circ_phase_group", miss_front=0.25)
+    if name == "circ:phase_group_u2":
+        return _circ_group(rng, n_perm, "circ_phase_group_u2")
+    if name == "circ:corrAngLinear":
+        return _circ_anglinear(rng, n_perm)
+    if name == "circ:corrAngLinear:missing":
+        return _circ_anglinear(rng, n_perm, miss_y=0.2, miss_a=0.2)
+    if name == "circ:tier1_unsigned_unadjusted":
+        return _tier1_unsigned(rng, n_perm)
     if name.startswith(("correlationP_cov:", "correlationS_cov:")):
         kind, n, k = name.split(":")
         return _partial_corr(rng, int(n), int(k), n_perm, kind == "correlationS_cov")
@@ -194,7 +307,11 @@ ANALYSES = ["pairedT", "pairedT_missing", "onesampleT", "unpairedT", "unpairedT_
             "posthoc:ancova:spread", "posthoc:rmanova:shift", "posthoc:rmanova:spread",
             "mixed2way:condition_crossover", "mixed2way:group_missing_cells",
             "correlationP_cov:20:3", "correlationP_cov:40:5", "correlationP_cov:12:2",
-            "correlationP_cov:10:4", "correlationS_cov:20:3", "correlationS_cov:40:5"]
+            "correlationP_cov:10:4", "correlationS_cov:20:3", "correlationS_cov:40:5",
+            "circ:phase_group", "circ:phase_group:count_confound",
+            "circ:phase_group:missing_front", "circ:phase_group_u2", "circ:corrAngLinear",
+            "circ:corrAngLinear:missing", "circ:tier1_unsigned_unadjusted",
+            "circ:phase_group:count_confound_unadjusted"]
 
 
 def main(argv=None):

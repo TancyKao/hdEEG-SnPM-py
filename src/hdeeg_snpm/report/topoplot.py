@@ -88,7 +88,7 @@ def effect_figure(view, setup, alpha) -> bytes:
     """Three maps for one effect: the statistic, TFCE-significant channels, and the numbered
     significant clusters."""
     sig = view.significant(alpha)
-    signed = view.stat_name != "F"
+    signed = view.stat_name not in ("F", "U2")
     fig, axes = plt.subplots(1, 3, figsize=(11.5, 3.7))
     topoplot(view.stat, setup, ax=axes[0], title=f"{view.stat_name} map", symmetric=signed,
              label=view.stat_name, marks=sig["uncorrected"])

@@ -44,3 +44,8 @@ effect appears as one cluster of 19 channels right of the midline behind the ver
 Run the same file again and the numbers are identical, because the seed is fixed. Leave `seed`
 out and a seed is drawn and written into the report and the `.json` file, so the run can still
 be repeated.
+
+## Next
+
+Other designs: [Analyse a table of subjects by channels](../how-to/analyse-a-table.md).
+Preferred phase of events: [Run a circular (phase) analysis](../how-to/run-a-circular-analysis.md).
