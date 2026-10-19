@@ -1,4 +1,4 @@
-"""Family-wise error rate of every phase 1 analysis on null data.
+"""Family-wise error rate of every ported analysis on null data.
 
 For each analysis, simulate data with no effect many times, run the permutation test, and count
 how often anything is declared significant at 0.05 (any channel after TFCE correction; any
@@ -20,6 +20,15 @@ rows write the synthetic tables to a temporary folder and run ``circ_pipeline.ru
 count rule, the estimability gate, the convention check and the channel set are the pipeline's
 own. There is no max-statistic correction in this tier.
 
+The mixed linear model (``lmm:*`` rows) fits ``(1|Subject)`` models through ``lmm.lmm_tfce`` and
+``lmm.lmm_cluster``, each with its own permutations, as the pipeline does. Trial-level data have a
+subject offset whose SD is 0.2 times the residual SD (18 subjects, 8 trials each), so a quarter to
+almost half of the channel fits sit at a subject variance of exactly zero (the boundary); at 0.4
+it is only 5 to 9%. ``lmm:continuous`` maps the t of POWER in
+``DV ~ POWER + (1|Subject)`` with the DV shuffled within subjects; ``lmm:factor`` maps the F of
+group in ``POWER ~ group + (1|Subject)`` (three groups) with whole subjects relabelled. Neither
+has any effect.
+
     python tools/fwe_simulation.py --sims 400 --perms 199 --out _scratch/fwe.csv
 """
 
@@ -37,7 +46,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from hdeeg_snpm import circ, circ_pipeline, glm, legacy, missing
+from hdeeg_snpm import circ, circ_pipeline, glm, legacy, lmm, missing
 from hdeeg_snpm.clusters import ChannelGraph
 from hdeeg_snpm.montage import get_montage
 from hdeeg_snpm.pipeline import _residual_forming, _residualise, cluster_threshold
@@ -194,9 +203,31 @@ def _tier1_unsigned(rng, n_perm, n_a=20, n_b=20):
     return _legacy("unpairedT", Y[:n_a], Y[n_a:], rng, n_perm)
 
 
+def _lmm(rng, n_perm, kind, n_subj=18, n_trial=8, sd_subject=0.2):
+    """Null trial-level data with a small random subject intercept (SD ``sd_subject`` times the
+    residual SD), to exercise fits at the zero-variance boundary."""
+    subj = np.repeat(np.arange(n_subj), n_trial)
+    meta = pd.DataFrame({"Subject": [f"s{i:02d}" for i in subj],
+                         "group": np.array([f"g{i % 3}" for i in range(n_subj)])[subj]})
+    power = unit_noise(rng, subj.size) + sd_subject * unit_noise(rng, n_subj)[subj]
+    if kind == "continuous":
+        meta["DV"] = rng.standard_normal(subj.size) + sd_subject * rng.standard_normal(n_subj)[subj]
+        spec = lmm.LMMSpec(dv="DV", fixed="POWER", effect="POWER", effect_type="continuous")
+    else:
+        spec = lmm.LMMSpec(dv="POWER", fixed="group", effect="group", effect_type="factor")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        T = lmm.lmm_tfce(power, meta, spec, _G, n_perm=n_perm, rng=rng)
+        C = lmm.lmm_cluster(power, meta, spec, _G, n_perm=n_perm, rng=rng)
+    return (np.nan, np.nanmin(T.p_correctedTFCE) <= ALPHA,
+            min(c.p for c in C.clusters) <= ALPHA)
+
+
 def one(args):
     name, seed, n_perm = args
     rng = np.random.default_rng(seed)
+    if name in ("lmm:continuous", "lmm:factor"):
+        return _lmm(rng, n_perm, name.split(":")[1])
     if name == "circ:phase_group":
         return _circ_group(rng, n_perm, "circ_phase_group")
     if name == "circ:phase_group:count_confound":
@@ -311,7 +342,7 @@ ANALYSES = ["pairedT", "pairedT_missing", "onesampleT", "unpairedT", "unpairedT_
             "circ:phase_group", "circ:phase_group:count_confound",
             "circ:phase_group:missing_front", "circ:phase_group_u2", "circ:corrAngLinear",
             "circ:corrAngLinear:missing", "circ:tier1_unsigned_unadjusted",
-            "circ:phase_group:count_confound_unadjusted"]
+            "circ:phase_group:count_confound_unadjusted", "lmm:continuous", "lmm:factor"]
 
 
 def main(argv=None):

@@ -9,7 +9,7 @@ The MATLAB toolbox is the reference: an analysis here counts as validated only o
 the MATLAB statistic maps and corrected p-values on shared inputs using the same permutation
 indices.
 
-**Status: v0.2.0 (phases 1 and 2) private pre-release. It reproduces the MATLAB toolbox on the parity fixtures; use the MATLAB toolbox for published inference until the public release.**
+**Status: v0.3.0 (phases 1 to 3) private pre-release. It reproduces the MATLAB toolbox on the parity fixtures; use the MATLAB toolbox for published inference until the public release.**
 
 | Piece | State |
 |---|---|
@@ -20,7 +20,8 @@ indices.
 | Results file, Excel workbook, scalp maps, HTML report, `snpm run` | written; Excel workbook matches MATLAB's numbers on 9 reference runs |
 | TurtleWave `neural_events.db` reader | written; density checked only in TurtleWave's environment (below) |
 | Circular phase analyses: circ_phase_group, circ_phase_group_u2, circ_corrAngLinear | ported in phase 2 (v0.2.0); reproduces MATLAB on 8 reference runs |
-| Mixed linear model, GUI, spectral-power folders | not ported |
+| Mixed linear model (`mixedmodel`), random intercept `(1\|Subject)` only | ported in phase 3 (v0.3.0); agrees with MATLAB on 6 reference runs within the fit tolerances (except a few permuted fits where MATLAB's optimiser stops short), correction exact |
+| GUI, spectral-power folders, other random structures | not ported |
 
 How agreement with MATLAB is checked, and where the two differ on purpose:
 [docs/explanation/parity-with-matlab.md](docs/explanation/parity-with-matlab.md).

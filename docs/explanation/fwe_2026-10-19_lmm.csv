@@ -1,0 +1,3 @@
+analysis,sims,perms,fwe_max,fwe_tfce,fwe_cluster,accept_low,accept_high,seed_offset
+lmm:continuous,600,99,,0.0417,0.0517,0.0326,0.0674,0
+lmm:factor,600,99,,0.0367,0.0483,0.0326,0.0674,0

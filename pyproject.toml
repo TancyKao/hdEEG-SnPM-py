@@ -22,7 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 turtlewave = ["turtlewave-hdeeg>=4.6"]
-dev = ["pytest>=7", "ruff>=0.4", "mne>=1.0"]
+dev = ["pytest>=7", "ruff>=0.4", "mne>=1.0", "statsmodels>=0.14"]
 
 [project.scripts]
 snpm = "hdeeg_snpm.cli:main"

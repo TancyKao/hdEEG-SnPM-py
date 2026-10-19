@@ -55,6 +55,7 @@ class EffectView:
     tfce_dh: float = 0.1                  # TFCE integration step
     methods: str = ""                     # methods paragraph, when the tier writes its own
     circular: dict | None = None          # circular tier: import, gate, descriptive panel, ...
+    mixed_model: dict | None = None       # mixed-model tier: formula, scheme, rows dropped, ...
     arrays: dict = field(default_factory=dict)   # extra per-channel arrays for the results file
 
     def excluded_by_reason(self) -> list[tuple[str, list[int]]]:
@@ -221,10 +222,69 @@ def _circ_view(res) -> EffectView:
         tfce_dh=prep.tfce_dh, methods=methods, circular=circular, arrays=arrays)
 
 
+def _lmm_view(res) -> EffectView:
+    from .lmm import dropped_text
+    from .lmm_pipeline import CLUSTER_STATISTIC
+
+    spec, labels, T = res.spec, res.setup.labels, res.T
+    name = "F" if spec.effect_type == "factor" else "t"
+    clusters = [ClusterView(0, c.channels, [labels[i] for i in c.channels], float(c.mass), c.p)
+                for c in res.clusters.clusters if c.channels.size]
+    scheme = ("the response shuffled within each subject's rows (within_subject)"
+              if spec.perm == "within_subject" else
+              "whole subjects relabelled between groups (group_label)")
+    stat_text = ("the t of its coefficient" if name == "t" else
+                 "the F of its coefficients (marginal Wald test divided by their number)")
+    methods = (
+        f"A linear mixed model, {spec.formula}, was fitted at each channel by maximum likelihood "
+        f"with a random intercept for each level of {spec.grouping} (the only random structure "
+        f"supported), reference coding and residual degrees of freedom (n - p). The effect of "
+        f"{spec.effect} was mapped as {stat_text}. Significance was corrected across channels by "
+        f"permutation, with {scheme}, in two ways, each with its own permutations: threshold-"
+        "free cluster enhancement (TFCE) with the maximum enhanced value over channels as the "
+        f"null, and a cluster test on channels with model p < {res.alpha:g} whose statistic is "
+        f"the {CLUSTER_STATISTIC}. A channel is tested only if it is complete across every "
+        "analysed row; that set is fixed before the first permutation.")
+    d = res.dropped
+    mixed = _plain({
+        "formula": spec.formula, "dv": spec.dv, "fixed": spec.fixed, "random": spec.random,
+        "random_structure": f"random intercept per {spec.grouping}",
+        "effect": spec.effect, "effect_type": spec.effect_type, "perm_scheme": spec.perm,
+        "subject_col": spec.subject, "group_col": spec.group, "coef_names": res.model_names,
+        "n_trials": res.n_trials, "n_subjects": res.n_subjects,
+        "dropped_rows": d.as_dict(), "dropped_text": dropped_text(d),
+        "cluster_statistic": CLUSTER_STATISTIC,
+        "n_degenerate_permutations": T.n_degenerate, "df": T.fit.df,
+        "fit": "maximum likelihood, closed form in the variance ratio (exact optimum)"})
+    df = f"{T.fit.df:g}" if name == "t" else f"{len(lmm_effect_cols(res))}, {T.fit.df:g}"
+    gtext = (f"{name}({df}) = {res.global_stat:.4g}, p = {res.global_p:.4g}"
+             if np.isfinite(res.global_stat) else f"{name} not computed: the fit failed")
+    return EffectView(
+        key="main", title=f"Mixed model: {spec.effect} ({spec.effect_type})", stat_name=name,
+        stat=T.real_T, p_uncorrected=T.p_real, tfce=T.real_TFCE, p_tfce=T.p_correctedTFCE,
+        cluster_statistic="mass", cluster_threshold=f"model p < {res.alpha:g}",
+        clusters=_number(clusters), n_permutations=T.n_perm, excluded=res.excluded,
+        excluded_reasons=list(res.excluded_reasons), global_text=gtext, global_stat=res.global_stat,
+        global_p=res.global_p, global_reason="" if np.isfinite(res.global_stat) else "fit failed",
+        global_n_channels=int(res.evaluable.sum()), methods=methods, mixed_model=mixed,
+        arrays={"evaluable": res.evaluable, "within_ratio": res.within_ratio, "wald": T.fit.wald, "beta": T.fit.beta,
+                "se": T.fit.se, "loglik": T.fit.loglik, "sd_subject": T.fit.sd_subject,
+                "sd_residual": T.fit.sigma, "boundary": T.fit.boundary,
+                "tfce_null": T.tMaxTFCE, "cluster_mass_null": res.clusters.maxMass,
+                "dropped_rows": res.dropped.rows})
+
+
+def lmm_effect_cols(res) -> list[int]:
+    from .lmm import LMM
+    return LMM(res.meta, res.spec).effect_cols
+
+
 def effect_views(results) -> list[EffectView]:
     """Top-level effects in run order, each carrying its post-hoc contrasts."""
     if getattr(results, "tier", "") == "circ":
         return [_circ_view(results)]
+    if getattr(results, "tier", "") == "lmm":
+        return [_lmm_view(results)]
     if hasattr(results, "prepared"):
         return [_legacy_view(results)]
     labels, views = results.setup.labels, []

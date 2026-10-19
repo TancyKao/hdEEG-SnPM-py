@@ -39,6 +39,12 @@ nothing may be excluded silently.
 - `circ_pipeline.py`: circular files to results (`run_circ`): reading and aligning angle, count
   and measure files, the estimability gate fixed before the loop, the permutation driver, and
   `tier1_guard`, which `pipeline.py` runs before every non-circular analysis.
+- `lmm.py`, `lmm_pipeline.py`: mixed linear model tier, random intercept `(1|Subject)` only
+  (closed-form maximum-likelihood fit, `within_subject` and `group_label` schemes, rows with a
+  missing model variable dropped up front; settings that leave nothing to permute refused before
+  any fit; channels constant within each subject (within-subject share <= 1e-6) excluded once
+  when they are the response or the `within_subject` predictor; a per-labelling backstop gives no
+  statistic to a fit with no residual variation or a moment subject/residual SD ratio >= 1e3).
 - `missing.py`: which channels can be tested. `pipeline.py`: files to results.
 - `views.py`, `output.py`, `report/`: one description of an effect, then the writers.
 - `io/tables.py`, `io/turtlewave.py`: inputs. `cli.py`: `snpm run config.toml`.
@@ -67,8 +73,23 @@ none of its own.
 - Excel layout (Tancy, 2026-10-17): significant-channel sheets have one row per channel with
   index and label (MATLAB: one row of indices); `excludedChannels` names the analysis in the
   sheet prefix (MATLAB: an `Analysis` column); post-hoc status is in the `contents` sheet (MATLAB:
-  a `posthoc` sheet). Numbers, channel sets and reason texts are identical
-  (`tests/test_parity_workbook.py`).
+  a `posthoc` sheet); the mixed model adds a `mixedModel` sheet (formula, random structure,
+  effect, scheme, trials and subjects analysed, cluster statistic, whole-head test) that MATLAB
+  does not write; its `droppedRows` sheet follows MATLAB. Numbers, channel sets and
+  reason texts are identical (`tests/test_parity_workbook.py`).
+- Mixed linear model fit: Python's estimator (closed form in the subject-to-residual SD ratio,
+  `lmm.fit_random_intercept`) always reaches the true maximum-likelihood optimum, including a
+  subject SD of exactly 0. MATLAB's `fitlme` can stall at a subject SD of 0 when the optimum is
+  above it; MATLAB now refits those channels (guard in `snpm_lmm_fitlme.m`). Permuted refits
+  agree within the fit tolerance except where `fitlme` stops short of the maximum, where this
+  package's likelihood is higher: 9 of 400 maps in `lmm_degenerate`, worst 1.6e-4 of the map
+  maximum (`KNOWN_MATLAB_OPTIMISER_SHORTFALLS` in `tests/test_parity_lmm.py`); the effect on
+  inference is negligible. Tolerances: `docs/explanation/parity-with-matlab.md`.
+- Mixed linear model formula: the fixed part refuses removing the intercept (`- 1`, `0`), which
+  MATLAB `fitlme` accepts; a factor effect is matched by its set of variables, so `time:group`
+  names the same term as `group:time` (MATLAB matches the term name exactly).
+  An effect that names no coefficient (continuous) or no term (factor) of the fixed part is
+  refused before any fit; MATLAB runs and returns a map that is NaN at every channel.
 - TurtleWave reader (`io/turtlewave.py`) versus the MATLAB repository's `db_to_group_table.py`:
   a database older than TurtleWave 4.3 has no density in the reader, while the bridge divides by
   hypnogram time when given `--allow-hypnogram-denominator`; the reader names a subject by the
@@ -92,5 +113,5 @@ the dated log.
 
 ## Not ported
 
-Mixed linear model (phase 3), GUI, spectral-power folders, the
-2447-voxel source path.
+GUI, spectral-power folders, the 2447-voxel source path. In the mixed linear model, any random
+structure other than one random intercept, `(1|G)`.

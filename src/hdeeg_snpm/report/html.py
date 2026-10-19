@@ -55,11 +55,15 @@ def _effect_context(view, setup, alpha):
         "excluded_groups": [(r, [labels[i] for i in idx]) for r, idx in view.excluded_by_reason()],
         "global_text": view.global_text, "global_n_channels": view.global_n_channels,
         "cluster_note": ("(number of channels)" if view.cluster_statistic == "size" else
+                         "(the mean Wald: sum of t² for a continuous effect, or of F for a "
+                         "factor, over the cluster, divided by the number of channels)"
+                         if view.mixed_model else
                          "(sum of F or t² over the cluster, divided by the number of channels)"
                          if view.stat_name in ("F", "t") and not view.circular else
                          f"(sum of {view.stat_name} over the cluster, divided by the number of "
                          "channels)"),
         "descriptive": (view.circular or {}).get("descriptive"),
+        "mixed_model": view.mixed_model,
         "peak": "n/a" if peak is None else f"{abs(view.stat[peak]):.3f}",
         "peak_label": "n/a" if peak is None else labels[peak],
         "n_unc": len(sig["uncorrected"]), "n_tfce": len(sig["tfce"]), "n_cluster": len(sig["cluster"]),
@@ -83,7 +87,8 @@ def render(views, setup, params, alpha, seed, notes=(), title=None) -> str:
     shown = ("comparison", "tail", "datatype", "data1_file", "data2_file", "data_file",
              "covariate_file", "count1_file", "count2_file", "circ_units", "circ_convention",
              "circ_zero_offset_deg", "measure_col", "group_col", "condition_col", "subject_col",
-             "predictor_col", "covariate_cols")
+             "predictor_col", "covariate_cols", "lmm_dv", "lmm_fixed", "lmm_random",
+             "lmm_effect", "lmm_effect_type", "lmm_perm", "lmm_subject", "lmm_group")
     return env.get_template("report.html.j2").render(
         title=title or f"hdEEG-SnPM report: {params['comparison']}",
         created=datetime.now().strftime("%Y-%m-%d %H:%M"), montage=setup.system_key,

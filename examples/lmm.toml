@@ -1,0 +1,19 @@
+# Mixed linear model on synthetic trial-level data in examples/data/lmm_long.csv, derived from
+# the MATLAB toolbox's example_data/lmm_long.csv: the 177 of its 256 channel columns that are in
+# the EGI-178 montage, values rounded to 4 decimals, metadata unchanged. 20 subjects x 15 trials,
+# one row per trial. Does band power predict sleep depth? sleepDepth ~ POWER + (1|Subject),
+# signed t of POWER at each channel; the response is shuffled within each subject
+# (within_subject). A cluster is planted near E129.
+comparison      = "mixedmodel"
+channels        = "egi"
+datatype        = "absolute"
+data_file       = "data/lmm_long.csv"
+lmm_meta_cols   = ["Subject", "group", "time", "sleepDepth"]
+lmm_dv          = "sleepDepth"
+lmm_fixed       = "POWER"
+lmm_random      = "(1|Subject)"
+lmm_effect      = "POWER"
+lmm_effect_type = "continuous"
+permutations    = 500
+seed            = 20261013
+output_path     = "../_scratch/example_output"

@@ -3,7 +3,8 @@
 Ports the flow of ``core_snpm_analysis.m``, in its order: read, match subjects (correlation),
 check the two files line up, select channels, transform, drop empty rows, apply the channel rule
 once, residualise on covariates, whole-head test, then the two permutation engines. ``run``
-routes the GLM presets and the circular tier (``circ_pipeline``) as MATLAB's early guards do,
+routes the GLM presets, the mixed model (``lmm_pipeline``) and the circular tier
+(``circ_pipeline``) as MATLAB's early guards do,
 and the Tier-1 unsigned-measure guard runs before every non-circular analysis.
 """
 
@@ -591,6 +592,10 @@ def run(params: dict, rng: np.random.Generator | None = None):
         raise ValueError(circ_pipeline.retired_message(comparison))
     if comparison in circ_pipeline.COMPARISONS:
         return circ_pipeline.run_circ(params, rng)
+    if comparison == "mixedmodel":
+        from . import lmm_pipeline
+        circ_pipeline.tier1_guard(params)
+        return lmm_pipeline.run_lmm(params, rng)
     if comparison in legacy.COMPARISONS:
         return run_legacy(params, rng)
     return run_glm(params, rng)

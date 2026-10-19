@@ -62,6 +62,64 @@ The TFCE function alone is also compared with 206 stored MATLAB maps and agrees 
 Run it with `pytest -m parity`. The reference files are built on the machine that has MATLAB
 and are not in the repository, so these tests are skipped elsewhere.
 
+### Mixed linear model fit (19 October 2026)
+
+The mixed model cannot be compared to rounding. MATLAB's `fitlme` stops its optimiser when the
+gradient falls below about 1e-6, so its estimates carry an error of that order, while this
+package finds the maximum-likelihood optimum in closed form (see the differences below). The
+fit is therefore compared with tolerances, and the correction, which involves no optimiser, is
+compared exactly by handing MATLAB's recorded permuted maps to this package's TFCE and cluster
+code.
+
+| Quantity | Requirement |
+|---|---|
+| Channels tested and channels excluded, with their reasons; rows dropped for a missing model variable; channels with no statistic under the backstop (observed and refitted permuted maps) | identical |
+| Within-subject share of variation per channel | relative difference below 1e-9 (sweep) |
+| Statistic (t or F), Wald statistic, coefficients, standard errors, subject and residual SD | difference below 1e-6 of the largest magnitude in the map |
+| Model p-value at every channel | relative difference below 1e-5 |
+| Log-likelihood | absolute difference below 1e-8 |
+| Permuted maps refitted under MATLAB's indices (every draw of both loops for `lmm_degenerate` and `lmm_factor`, the first 40 draws of each loop elsewhere) | difference below 1e-6 of the largest magnitude in the map, except at channels where MATLAB's optimiser stopped short of the maximum, which must show a higher log-likelihood in this package and are listed by draw |
+| TFCE map, sorted TFCE null, sorted cluster-mass null (from MATLAB's permuted maps) | relative difference below 1e-9 |
+| TFCE-corrected p-values, clusters and their p-values | identical |
+| Whole-head test | relative difference below 1e-6 (statistic), 1e-5 (p) |
+
+Measured worst differences on the reference runs are smaller than these limits: 3.6e-7 on the
+statistic, 1.7e-6 relative on the model p, 2.2e-7 on the subject SD and 2e-14 on the
+log-likelihood.
+
+Permuted refits agree within the fit tolerance except where MATLAB's `fitlme` stops short of the
+likelihood maximum. Refitting all 200 draws of both loops of all six runs, this happens in 9 of
+the 400 permuted maps of `lmm_degenerate` (TFCE draws 66, 93, 142, 161, 181, 188; cluster draws
+128, 154, 188, counted from 0) and nowhere else; the worst difference is 1.6e-4 of the map
+maximum, and at every such channel this package's log-likelihood is the higher one. Two are fits
+left at a subject SD of zero whose likelihood gain (9e-8 and 3e-8) is below the 1e-6 that MATLAB's
+refit guard asks for; the other seven are interior points where `fitlme` stopped with a
+log-likelihood 2e-6 to 1.2e-4 below the maximum. The test records these draws
+(`KNOWN_MATLAB_OPTIMISER_SHORTFALLS`) so that a new one fails. Their effect on inference is
+negligible: they change a few null maps by at most 1.6e-4 of their maximum, and the TFCE and
+cluster corrections computed from MATLAB's own recorded maps are reproduced exactly.
+
+Six reference runs, each with 200 permutations per loop on the EGI net, and one backstop sweep,
+checked by 26 tests, all passing on 20 October 2026 (`pytest tests/test_parity_lmm.py`):
+
+- `sleepDepth ~ POWER + (1|Subject)`, continuous, `within_subject`;
+- the same with missing cells in four channels, which are excluded;
+- `sleepDepth ~ POWER + group + (1|Subject)`, continuous, `within_subject`;
+- the same with 33 of 300 rows missing a model variable (group or the response), dropped up
+  front;
+- `POWER ~ group + (1|Subject)`, factor, `group_label`;
+- `lmm_degenerate`: the same factor model with three channels made constant within each subject,
+  at within-subject shares of 0, 7e-32 and 9e-7, just under the 1e-6 line. Both programs
+  exclude the same three channels with the same reason, and the next channel up (share 0.27) is
+  tested.
+
+The backstop sweep (`lmm_backstop_sweep`, built by MATLAB's `scripts/export_lmm_backstop_sweep.m`)
+fits `y ~ group + (1|Subject)` with 12 subjects of 5 trials to six columns whose method-of-moments
+subject/residual SD ratio is set to 100, 500, 999, 1001, 2000 and 10000. Both programs keep the
+first three and give the last three no statistic, and the residual sums of squares, the moment
+ratio (relative difference below 1e-9; 1e-6 for the sum of squares with the subject intercepts)
+and the within-subject shares agree.
+
 ### TurtleWave density
 
 Event density from TurtleWave databases is computed by TurtleWave's own code, so the tests that
@@ -93,7 +151,20 @@ each item on it and adds none.
 - **Excel layout**: a significant-channel sheet has one row per channel with its index and label
   (MATLAB writes one row of indices); the `excludedChannels` sheet name carries the analysis
   (MATLAB adds an `Analysis` column); post-hoc status is in the `contents` sheet (MATLAB has a
-  `posthoc` sheet). Numbers, channel sets and exclusion reasons are identical.
+  `posthoc` sheet); the mixed model adds a `mixedModel` sheet with the formula, the permutation
+  scheme, the trials and subjects analysed and the whole-head test, which MATLAB's workbook does
+  not have (the `droppedRows` sheet is MATLAB's). Numbers, channel sets and exclusion reasons are
+  identical.
+- **Mixed-model fit at a subject variance of zero**: with one random intercept the likelihood
+  depends on one number, the ratio of the subject SD to the residual SD, and this package
+  searches it directly, so it always reaches the maximum, including a ratio of exactly zero.
+  MATLAB's `fitlme` works on the same ratio, but zero is always a point of zero gradient for it,
+  so an iteration that lands there stops even when a positive ratio fits much better. On one
+  reference run this happened at 21 channel fits in 7 of 400 permuted maps, with a
+  log-likelihood 4 to 8 lower than the optimum and an F about 2.6 times too large. MATLAB now
+  refits any channel whose subject SD comes back at the boundary from a second start and keeps
+  the better fit (`snpm_lmm_fitlme.m`), so the two programs agree to the tolerances above, apart
+  from the few permuted fits where `fitlme` still stops short of the maximum (listed above).
 - **TurtleWave reader versus `db_to_group_table.py`**: the MATLAB repository's bridge script and
   this package's reader build the same tables from TurtleWave databases but differ in four
   places. A database older than TurtleWave 4.3 has no density in the reader, while the bridge
@@ -355,3 +426,43 @@ and 0.992 for clusters: the noisier group has larger distances everywhere, which
 refusal exists. MATLAB's figure of 0.280 for this route comes from a design that is not
 recorded with it, so it is not compared; this row is a demonstration that the refusal is needed,
 not a calibration check.
+
+### Mixed linear model false-positive rates (19 October 2026)
+
+The mixed model was run through the same simulation on the EGI 178 graph, calling the TFCE and
+cluster-mass engines as the pipeline does, each with its own permutations. Every refit is a full
+mixed-model fit at every channel, so the run is smaller than the others: 600 simulations per row
+with 99 permutations per loop, 21 minutes on 16 workers. For a true rate of 0.05 the 95% range
+at 600 simulations is 0.033 to 0.067. There is no max-statistic correction in this tier.
+
+Each simulation has 18 subjects with 8 trials each, a random subject intercept whose standard
+deviation is 0.2 times the residual standard deviation in both power and the response, and
+spatially correlated noise with unit variance at every channel. The subject variance is small on
+purpose: about a quarter of the channel fits of the continuous row and almost half of those of
+the factor row put the subject variance at exactly zero, so the rows check the boundary where
+MATLAB's `fitlme` used to stall. (At 0.4 times the residual standard deviation only 5 to 9% of
+fits reach it.) Nothing has an effect.
+
+- Continuous: `DV ~ POWER + (1|Subject)`, the t of POWER, with the response shuffled within
+  each subject (`within_subject`).
+- Factor: `POWER ~ group + (1|Subject)` with three groups of 6 subjects, the F of group, with
+  whole subjects relabelled (`group_label`).
+
+The run is in [fwe_2026-10-19_lmm.csv](fwe_2026-10-19_lmm.csv).
+
+    python tools/fwe_simulation.py --sims 600 --perms 99 --workers 16 \
+        --only lmm:continuous lmm:factor
+
+| Analysis | TFCE | Cluster |
+|---|---|---|
+| mixedmodel, continuous effect, `within_subject` | 0.042 | 0.052 |
+| mixedmodel, factor effect (3 groups), `group_label` | 0.037 | 0.048 |
+
+All four rates lie inside the range. The factor TFCE rate (0.037) is near its lower edge, which
+means slightly conservative, not invalid.
+
+The run predates the exclusion of channels constant within each subject and the backstop at every
+fit (20 October 2026). Neither changes these rows: on 10 of the simulated data sets, with the
+observed labelling and 20 permutations each, the smallest within-subject share was 0.66 (the
+exclusion line is 1e-6), the largest moment subject/residual SD ratio was 0.64 (the backstop line
+is 1000), and no fit was flagged.

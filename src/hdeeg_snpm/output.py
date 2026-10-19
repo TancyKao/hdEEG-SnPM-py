@@ -59,6 +59,7 @@ def results_summary(views, setup, params, alpha, seed, notes) -> dict:
             "skipped_pairs": [{"pair": k, "reason": why} for k, why in v.skipped],
             **({"covariates": v.covariates} if v.covariates else {}),
             **({"circular": v.circular} if v.circular else {}),
+            **({"mixed_model": v.mixed_model} if v.mixed_model else {}),
         }
 
     return {"package": "hdeeg-snpm", "version": __version__,
