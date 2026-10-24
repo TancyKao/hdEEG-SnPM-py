@@ -9,7 +9,7 @@ The MATLAB toolbox is the reference: an analysis here counts as validated only o
 the MATLAB statistic maps and corrected p-values on shared inputs using the same permutation
 indices.
 
-**Status: v0.3.0 (phases 1 to 3) private pre-release. It reproduces the MATLAB toolbox on the parity fixtures; use the MATLAB toolbox for published inference until the public release.**
+**Status: v0.4.0, beta. It reproduces the MATLAB toolbox on the parity fixtures (phases 1 to 3); the MATLAB toolbox stays the reference. Changes: [CHANGELOG.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/CHANGELOG.md).**
 
 | Piece | State |
 |---|---|
@@ -24,14 +24,19 @@ indices.
 | GUI, spectral-power folders, other random structures | not ported |
 
 How agreement with MATLAB is checked, and where the two differ on purpose:
-[docs/explanation/parity-with-matlab.md](docs/explanation/parity-with-matlab.md).
-All documentation: [docs/README.md](docs/README.md).
+[docs/explanation/parity-with-matlab.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/docs/explanation/parity-with-matlab.md).
+All documentation: [docs/README.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/docs/README.md).
+
+## Install
+
+    pip install hdeeg-snpm
 
 ## Use
 
     snpm run examples/paired_t.toml
 
-writes a results file, a summary, an Excel workbook and a self-contained HTML report.
+writes a results file, a summary, an Excel workbook and a self-contained HTML report. The example
+files are in this repository, under `examples/`.
 
 ## Install (development)
 

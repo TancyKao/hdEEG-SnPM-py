@@ -21,7 +21,7 @@ data1_file   = "data/paired_condA.csv"
 data2_file   = "data/paired_condB.csv"
 permutations = 1000
 seed         = 20261013
-output_path  = "../_scratch/example_output"
+output_path  = "../example_output"
 ```
 
 Each data file has one row per subject, a `Subject` column, and one column per channel named

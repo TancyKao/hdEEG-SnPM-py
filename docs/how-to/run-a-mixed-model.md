@@ -44,7 +44,7 @@ lmm_effect      = "POWER"
 lmm_effect_type = "continuous"
 permutations    = 500
 seed            = 20261013
-output_path     = "../_scratch/example_output"
+output_path     = "../example_output"
 ```
 
     snpm run examples/lmm.toml

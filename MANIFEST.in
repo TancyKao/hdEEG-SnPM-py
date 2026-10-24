@@ -1,0 +1,4 @@
+include CHANGELOG.md
+include tests/conftest.py tests/parity_util.py
+recursive-include tests/data *
+recursive-include examples *.toml *.csv

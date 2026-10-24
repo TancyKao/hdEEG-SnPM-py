@@ -53,7 +53,7 @@ circ_units      = "rad"
 circ_convention = "literature_uppeak0"
 permutations    = 1000
 seed            = 20261013
-output_path     = "../_scratch/example_output"
+output_path     = "../example_output"
 ```
 
     snpm run examples/circ_phase_group.toml

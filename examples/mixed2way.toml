@@ -9,4 +9,4 @@ condition_col = "condition"
 subject_col   = "Subject"
 permutations  = 500
 seed          = 20261013
-output_path   = "../_scratch/example_output"
+output_path   = "../example_output"

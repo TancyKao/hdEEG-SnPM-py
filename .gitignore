@@ -12,3 +12,6 @@ parity_fixtures/
 _scratch/
 # Agent definitions stay local: their leak-sweep lists name local paths and project codes
 .claude/
+
+# output of the examples/ runs
+example_output/
