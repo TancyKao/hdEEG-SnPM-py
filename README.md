@@ -15,7 +15,7 @@ indices.
 |---|---|
 | Recording systems (EGI 256 HydroCel, Compumedics 257 Neuvo) | ported; Compumedics checked against MATLAB on anova1, correlationP, pairedT, unpairedT |
 | TFCE and cluster finding | ported; equal to MATLAB on 206 stored maps |
-| Paired, unpaired, one-sample t-tests; Pearson and Spearman correlation with covariates | ported; reproduces MATLAB on 31 reference runs |
+| Paired, unpaired, one-sample t-tests; Pearson and Spearman correlation with covariates | ported; reproduces MATLAB on 33 reference runs |
 | Group designs: anova1, ancova, regression, rmanova, mixed2way | ported; reproduces MATLAB on 8 reference runs (37 permutation loops) |
 | Results file, Excel workbook, scalp maps, HTML report, `snpm run` | written; Excel workbook matches MATLAB's numbers on 9 reference runs |
 | TurtleWave `neural_events.db` reader | written; density checked only in TurtleWave's environment (below) |

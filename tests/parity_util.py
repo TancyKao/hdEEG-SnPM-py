@@ -49,9 +49,11 @@ def assert_close(actual, expected, rtol, what):
     assert diff <= rtol * max(scale, np.finfo(float).tiny), f"{what}: {diff / scale:.3g} relative"
 
 
-def assert_p_equal(actual, expected, observed, null_sorted, what, two_sided=True):
-    """Corrected p-values must be identical. A difference of one count, 1/(N+1), is accepted only
-    where the observed value lies within 1e-9 (relative) of a null value. Returns those channels."""
+def assert_p_equal(actual, expected, observed, null_sorted, what, two_sided=True,
+                   identity_in_null=False):
+    """Corrected p-values must be identical. A difference of one count is accepted only where the
+    observed value lies within 1e-9 (relative) of a null value. Returns those channels. One count
+    is 1/(N+1), or 1/N in the legacy tier (``identity_in_null``), where p = b/N."""
     actual = np.asarray(actual, dtype=float).ravel()
     expected = np.asarray(expected, dtype=float).ravel()
     assert np.array_equal(np.isnan(actual), np.isnan(expected)), f"{what}: NaN pattern differs"
@@ -59,7 +61,7 @@ def assert_p_equal(actual, expected, observed, null_sorted, what, two_sided=True
     null = null[~np.isnan(null)]
     obs = np.asarray(observed, dtype=float).ravel()
     obs = np.abs(obs) if two_sided else obs
-    step = 1.0 / (np.asarray(null_sorted).size + 1)
+    step = 1.0 / (np.asarray(null_sorted).size + (0 if identity_in_null else 1))
     ties = []
     for ch in np.flatnonzero(~np.isnan(expected) & (actual != expected)):
         gap = np.min(np.abs(null - obs[ch])) / max(abs(obs[ch]), np.finfo(float).tiny)

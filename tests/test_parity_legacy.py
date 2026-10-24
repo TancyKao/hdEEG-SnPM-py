@@ -106,9 +106,9 @@ def test_matches_matlab(case):
     pu.assert_close(out.T.critical_T_TFCE, T["critical_T_TFCE"], pu.NULL_RTOL, "critical TFCE")
     pu.assert_close(out.T.p_real, p["real"], 1e-8, "uncorrected p")
     ties = pu.assert_p_equal(out.T.p_corrected, p["corrected"], T["real_T"], T["tMax"],
-                             "max-statistic p", two_sided)
+                             "max-statistic p", two_sided, identity_in_null=True)
     ties += pu.assert_p_equal(out.T.p_correctedTFCE, p["correctedTFCE"], T["real_TFCE"],
-                              T["tMaxTFCE"], "TFCE p", two_sided)
+                              T["tMaxTFCE"], "TFCE p", two_sided, identity_in_null=True)
     assert ties == KNOWN_TIES.get(case, []), f"p differs by one count at channels {ties}"
 
     def key(channels, threshold):

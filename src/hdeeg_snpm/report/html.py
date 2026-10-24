@@ -8,6 +8,7 @@ import numpy as np
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from .. import __version__
+from ..legacy import COMPARISONS as LEGACY_COMPARISONS
 from .topoplot import data_uri, effect_figure
 
 _METHODS = {
@@ -80,6 +81,16 @@ def _effect_context(view, setup, alpha):
     }
 
 
+def _p_text(comparison: str) -> str:
+    """How the corrected p was formed: b / N in the legacy tier, (b + 1) / (N + 1) elsewhere."""
+    if comparison in LEGACY_COMPARISONS:
+        return ("p-values are b / N, where N counts the observed labelling among the "
+                "permutations and b is the number of them, the observed one included, whose "
+                "maximum reaches the observed value.")
+    return ("p-values are (b + 1) / (N + 1), where b is the number of permutations whose "
+            "maximum reaches the observed value.")
+
+
 def render(views, setup, params, alpha, seed, notes=(), title=None) -> str:
     env = Environment(loader=PackageLoader("hdeeg_snpm.report", "templates"),
                       autoescape=select_autoescape(["html", "j2"]))
@@ -101,5 +112,6 @@ def render(views, setup, params, alpha, seed, notes=(), title=None) -> str:
         # skipped pairs and left-out subjects are stated under their own effect
         notes=[n for n in notes if not n.startswith(("Post-hoc ", "Simple effect "))], alpha=f"{alpha:g}", seed=seed, version=__version__,
         permutations_text=f"{' / '.join(str(n) for n in n_perm)} permutations per test.",
+        p_text=_p_text(params["comparison"]),
         tfce_dh=f"{views[0].tfce_dh:g}",
         effects=[_effect_context(v, setup, alpha) for v in views])

@@ -606,11 +606,11 @@ def test_constant_within_subject_is_excluded_or_refused_up_front(egi_graph, tmp_
     out = lmm_pipeline.prepare(_params(path, lmm_dv="POWER", lmm_fixed="group",
                                        lmm_effect="group", lmm_effect_type="factor"))
     assert out[7] == {7: lmm.CONST_RESPONSE, 9: lmm.CONST_RESPONSE, 11: lmm.MISSING}
-    # a continuous predictor that varies within subject but under group_label is not excluded
-    # (group_label with a POWER effect is refused anyway, so test a covariate design)
+    # POWER as predictor under group_label: a subject-constant channel is kept; the flat one
+    # (one value on every trial) is excluded with its own reason
     out = lmm_pipeline.prepare(_params(path, lmm_fixed="POWER + group", lmm_effect="group",
                                        lmm_effect_type="factor"))
-    assert out[7] == {11: lmm.MISSING}
+    assert out[7] == {9: lmm.FLAT, 11: lmm.MISSING}
     # a DV constant within every subject cannot be shuffled
     flat_dv = meta.assign(DV=pd.Series(meta["DV"]).groupby(subj).transform("mean"))
     path2 = str(tmp_path / "dv.csv")
@@ -669,3 +669,324 @@ def test_effect_not_permuted_accepts_coefficient_names():
         "'groupSize' does not contain 'group', so every permuted map would equal the observed "
         "one. Use within_subject for an effect that varies within subjects, or test an effect of "
         "the group column.")
+
+
+# --------------------------------------------------------------------------- MATLAB T22-T27
+
+def test_inf_in_a_numeric_model_column_is_dropped_like_nan():
+    """MATLAB test_lmm_invariant T22: fitlme refuses an Inf row, which left every channel NaN; an
+    Inf in a model column is dropped like a NaN, an Inf in another column drops nothing."""
+    rng = np.random.default_rng(221)
+    meta, power = long_table(8, 9, 3, rng)
+    meta["time"] = np.tile(np.arange(9.0), 8)
+    spec = LMMSpec(dv="DV", fixed="POWER", effect="POWER", effect_type="continuous")
+    inf = meta.copy()
+    inf.loc[[3, 29], "DV"] = [np.inf, -np.inf]
+    inf.loc[8, "time"] = np.inf                       # not a model variable
+    with pytest.warns(lmm.LMMMetaNaNRows):
+        m2, p2, d = lmm.drop_missing_meta(inf, spec, power)
+    assert d.n == 2 and d.rows.tolist() == [3, 29] and len(m2) == 70 and p2.shape[0] == 70
+    assert d.columns == ["Subject", "DV"] and d.per_column == [0, 2]
+    nan = meta.copy()
+    nan.loc[[3, 29], "DV"] = np.nan
+    with pytest.warns(lmm.LMMMetaNaNRows):
+        m3, p3, _ = lmm.drop_missing_meta(nan, spec, power)
+    s2 = LMM(m2, spec).fit(p2).stat
+    assert np.isfinite(s2).all() and np.array_equal(s2, LMM(m3, spec).fit(p3).stat)
+    num = inf.assign(Subject=np.repeat(np.arange(8.0), 9))
+    num.loc[6, "Subject"] = np.inf                    # a numeric subject ID of Inf is missing too
+    with pytest.warns(lmm.LMMMetaNaNRows):
+        _, _, d4 = lmm.drop_missing_meta(num, spec, power)
+    assert d4.n == 3 and d4.rows.tolist() == [3, 6, 29]
+
+
+def _t23_meta(seed):
+    rng = np.random.default_rng(seed)
+    meta, power = long_table(8, 9, 3, rng)
+    meta["group"] = meta["group"].map({"G1": "A", "G2": "B"})
+    meta["time"] = np.tile(np.arange(9.0), 8)
+    meta["cov"] = rng.standard_normal(len(meta))
+    return meta, power
+
+
+def test_unknown_effect_is_refused_with_the_names_of_the_fixed_part(tmp_path):
+    """MATLAB T23: an effect naming no coefficient (continuous) or term (factor) is refused from
+    the metadata alone, before any fit, with fitlme's names listed."""
+    from hdeeg_snpm import lmm_pipeline
+    from hdeeg_snpm.montage import get_montage
+
+    meta, _ = _t23_meta(231)
+    labels = get_montage("egi").labels
+    power = 10 + np.random.default_rng(1).standard_normal((len(meta), len(labels)))
+    path = _write(tmp_path, meta, power, labels)
+    base = _params(path, lmm_meta_cols=["Subject", "group", "DV", "time", "cov"])
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm_pipeline.prepare(dict(base, lmm_fixed="POWER + cov", lmm_effect="POWERX"))
+    assert e.value.code == "unknownEffect"
+    assert str(e.value) == ("Effect 'POWERX' is not a coefficient of the fixed part 'POWER + cov' "
+                            "(coefficients: (Intercept), cov, POWER)")
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm_pipeline.prepare(dict(base, lmm_fixed="POWER*group", lmm_effect="POWER:time",
+                                  lmm_effect_type="factor", lmm_perm="within_subject"))
+    assert e.value.code == "unknownEffect"
+    assert str(e.value) == ("Effect 'POWER:time' is not a term of the fixed part 'POWER*group' "
+                            "(terms: group, POWER, group:POWER)")
+    # names built without a fit: logical as <var>_1, text levels, the first variable fastest,
+    # terms of one degree compared from their last variable (all as fitlme R2025a names them on
+    # this design)
+    m = meta.copy()
+    m["flag"] = np.repeat(np.arange(8) % 4 < 2, 9)
+    m["group3"] = np.repeat(["A", "B", "C", "A", "B", "C", "A", "B"], 9)
+    m["cond"] = np.tile(["x", "y", "z"], len(m) // 3)
+    fx = "POWER*group + group3:cond + flag + cov"
+    sp = LMMSpec(dv="DV", fixed=fx, effect="POWER", effect_type="continuous")
+    coefs, terms = lmm.fixed_names(m, sp)
+    assert coefs == ["(Intercept)", "group_B", "cov", "flag_1", "POWER", "group3_B:cond_y",
+                     "group3_C:cond_y", "group3_B:cond_z", "group3_C:cond_z", "group_B:POWER"]
+    assert [":".join(t) for t in lmm._terms(
+        "x4:x1 + x3:x2 + x3:x1 + x1:x2:x4 + x2:x3:x4 + x4 + x2", ["x1", "x2", "x3", "x4"])] == [
+        "x2", "x4", "x1:x3", "x2:x3", "x1:x4", "x1:x2:x4", "x2:x3:x4"]   # LinearFormula's order
+    assert terms == ["group", "cov", "flag", "POWER", "group3:cond", "group:POWER"]
+    model = LMM(m, sp)
+    assert model.names == coefs                       # the fit's own design columns
+    X, _ = model.design(np.ones((len(m), 1)))
+    want = ((m["group3"] == "C") & (m["cond"] == "y")).to_numpy(float)
+    assert np.array_equal(X[0, :, coefs.index("group3_C:cond_y")], want)
+    for c in coefs:
+        assert lmm.check_effect(m, LMMSpec(dv="DV", fixed=fx, effect=c,
+                                           effect_type="continuous")) == c
+    with pytest.raises(lmm.LMMInputError) as e:       # not fitlme's order
+        lmm.check_effect(m, LMMSpec(dv="DV", fixed=fx, effect="cond_y:group3_B",
+                                    effect_type="continuous", perm="within_subject"))
+    assert e.value.code == "unknownEffect"
+    for t in terms:
+        assert lmm.check_effect(m, LMMSpec(dv="DV", fixed=fx, effect=t, effect_type="factor",
+                                           perm="within_subject")) == t
+    assert lmm.check_effect(m, LMMSpec(dv="DV", fixed=fx, effect="POWER:group",
+                                       effect_type="factor")) == "group:POWER"
+
+
+def _not_permuted(effect):
+    return ("The group_label scheme relabels subjects between levels of 'group', but the effect "
+            f"'{effect}' does not contain 'group', so every permuted map would equal the observed "
+            "one. Use within_subject for an effect that varies within subjects, or test an effect "
+            "of the group column.")
+
+
+def test_group_label_needs_the_group_column_or_one_of_its_levels(tmp_path):
+    """MATLAB T24: a token names the group only as the group column or one of its coefficients;
+    another column (group_size) is refused as effectNotPermuted, a level not in the data (group_C)
+    as unknownEffect."""
+    from hdeeg_snpm import lmm_pipeline
+    from hdeeg_snpm.montage import get_montage
+
+    meta, _ = _t23_meta(241)
+    meta["group_size"] = 10 + np.repeat(np.arange(8) % 3, 9)
+    labels = get_montage("egi").labels
+    power = 10 + np.random.default_rng(2).standard_normal((len(meta), len(labels)))
+    path = _write(tmp_path, meta, power, labels)
+    p = _params(path, lmm_meta_cols=["Subject", "group", "DV", "time", "group_size"],
+                lmm_dv="POWER", lmm_fixed="group + group_size", lmm_effect="group_size",
+                lmm_perm="group_label")
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm_pipeline.prepare(p)
+    assert e.value.code == "effectNotPermuted" and str(e.value) == _not_permuted("group_size")
+    # a group coefficient for a level not in the data is an unknown effect, listing the real names
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm_pipeline.prepare(dict(p, lmm_effect="group_C"))
+    assert e.value.code == "unknownEffect"
+    assert str(e.value) == ("Effect 'group_C' is not a coefficient of the fixed part "
+                            "'group + group_size' (coefficients: (Intercept), group_B, group_size)")
+    sp = LMMSpec(dv="POWER", fixed="group + group_size", effect="group_B",
+                 effect_type="continuous", perm="group_label")
+    assert lmm.check_effect(meta, sp) == "group_B"
+    sp = LMMSpec(dv="DV", fixed="POWER*group", effect="group_B:POWER", effect_type="continuous",
+                 perm="group_label")
+    assert lmm.check_effect(meta, sp) == "group_B:POWER"
+    for eff, want in (("group", "group"), ("POWER:group", "group:POWER")):
+        sp = LMMSpec(dv="DV", fixed="POWER*group", effect=eff, effect_type="factor")
+        assert lmm.check_effect(meta, sp) == want
+    # before the file is read only the coarse form can be checked: group_size passes it
+    lmm.check_design(LMMSpec(dv="DV", fixed="POWER*group", effect="group_size",
+                             effect_type="factor"))
+    # the pipeline carries fitlme's term name on
+    out = lmm_pipeline.prepare(dict(p, lmm_dv="DV", lmm_fixed="POWER*group",
+                                    lmm_effect="POWER:group", lmm_effect_type="factor"))
+    assert out[0].effect == "group:POWER"
+
+
+def ws_fixture(seed, n_ch):
+    """MATLAB ws_fixture: 12 subjects (6 per group), 10 trials, 'time' varying within subject,
+    a subject-level 'age', response 'sleepDepth' driven by channel 0."""
+    rng = np.random.default_rng(seed)
+    n_s, n_t = 12, 10
+    si = np.repeat(np.arange(n_s), n_t)
+    power = rng.standard_normal((si.size, n_ch))
+    dv = rng.standard_normal(n_s)[si] + 0.8 * power[:, 0] + rng.standard_normal(si.size)
+    meta = pd.DataFrame({"Subject": [f"sub{s + 1:02d}" for s in si],
+                         "group": np.where(si < 6, "B", "A"), "age": 21.0 + si,
+                         "time": np.tile(np.arange(1.0, n_t + 1), n_s), "sleepDepth": dv})
+    return meta, power
+
+
+def _ws_params(path, **kw):
+    p = {"comparison": "mixedmodel", "data_file": path, "channels": "egi",
+         "lmm_meta_cols": ["Subject", "group", "age", "time", "sleepDepth"],
+         "lmm_dv": "sleepDepth", "lmm_random": "(1|Subject)", "lmm_subject": "Subject",
+         "lmm_group": "group", "permutations": 5, "seed": 1}
+    p.update(kw)
+    return p
+
+
+def _eff_const_msg(effect, w):
+    return ("The within_subject scheme shuffles 'sleepDepth' within each subject, but the effect "
+            f"'{effect}' is constant within each subject (largest within-subject share of "
+            f"variation among its variables {w}, threshold 1e-06), so the shuffle leaves the "
+            "effect in place and gives no null for it. Use group_label for a between-group "
+            "effect, or test an effect that varies within subjects.")
+
+
+def test_within_subject_refuses_an_effect_constant_within_subject(tmp_path):
+    """MATLAB T25: the within-subject shuffle leaves each subject's mean of the DV in place, so
+    an effect whose variables are all constant within subject has no null under it."""
+    from hdeeg_snpm import lmm_pipeline
+    from hdeeg_snpm.montage import get_montage
+
+    labels = get_montage("egi").labels
+    meta, power = ws_fixture(251, len(labels))
+    path = _write(tmp_path, meta, power, labels)
+    base = _ws_params(path, lmm_perm="within_subject")
+    for extra, eff in (({"lmm_fixed": "POWER + group", "lmm_effect": "group",
+                         "lmm_effect_type": "factor"}, "group"),
+                       ({"lmm_fixed": "POWER + group", "lmm_effect": "group_B",
+                         "lmm_effect_type": "continuous"}, "group_B"),
+                       ({"lmm_fixed": "POWER + age", "lmm_effect": "age",
+                         "lmm_effect_type": "continuous"}, "age")):
+        with pytest.raises(lmm.LMMInputError) as e:
+            lmm_pipeline.prepare(dict(base, **extra))
+        assert e.value.code == "effectConstantWithinSubject"
+        assert str(e.value) == _eff_const_msg(eff, 0)
+    share = lmm.effect_within_share
+    assert share(meta, "time", "Subject") > 1e-6
+    assert share(meta, "group:time", "Subject") > 1e-6
+    assert share(meta, "group_B:time", "Subject") > 1e-6
+    assert np.isnan(share(meta, "group:POWER", "Subject"))
+    assert np.isnan(share(meta, "nothing_here", "Subject"))
+    out = lmm_pipeline.prepare(dict(base, lmm_fixed="POWER + group*time",
+                                    lmm_effect="group_B:time", lmm_effect_type="continuous"))
+    assert out[0].effect == "group_B:time"
+    m = meta.copy()
+    m.loc[4, "group"] = "A"                            # subject 1 is B: one differing trial
+    assert share(m, "group", "Subject") > 1e-6
+    # the share is printed as MATLAB's %.3g
+    from hdeeg_snpm.lmm_pipeline import _g3
+    assert [_g3(v) for v in (0.0, 1.23456e-7, 5e-7)] == ["0", "1.23e-07", "5e-07"]
+
+
+def test_group_label_keeps_a_subject_constant_power_and_excludes_a_flat_one(tmp_path):
+    """MATLAB T26: under group_label with a metadata response, relabelling subjects moves the
+    response and POWER together, so a POWER constant within subject is a subject-level covariate
+    and the channel is kept; a channel with one value on every trial is excluded with its reason.
+    MATLAB's third case, a random POWER slope by subject, is refused here (only (1|Subject) is
+    fitted)."""
+    from hdeeg_snpm import lmm_pipeline
+    from hdeeg_snpm.montage import get_montage
+
+    labels = get_montage("egi").labels
+    meta, power = ws_fixture(261, len(labels))
+    subj = meta["Subject"].to_numpy()
+    power[:, 39] = pd.Series(power[:, 6]).groupby(subj).transform("mean").to_numpy()
+    power[:, 40] = 5.0
+    path = _write(tmp_path, meta, power, labels)
+    p = _ws_params(path, lmm_fixed="group*POWER", lmm_effect="group", lmm_effect_type="factor",
+                   permutations=3)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = lmm_pipeline.run_lmm(p)
+    assert res.excluded.tolist() == [40] and res.excluded_reasons == ["same value in every subject"]
+    assert np.isnan(res.T.real_T[40]) and np.isfinite(res.T.real_T[39])
+    spec = LMMSpec(dv="sleepDepth", fixed="group*POWER", effect="group", effect_type="factor")
+    ref = LMM(res.meta, spec).fit(res.power[:, [39]]).stat[0]
+    assert res.T.real_T[39] == pytest.approx(ref, rel=1e-8)   # optimiser tolerance
+    with pytest.raises(lmm.UnsupportedRandomEffects):
+        lmm_pipeline.prepare(dict(p, lmm_random="(1 + POWER|Subject)"))
+
+
+def test_group_label_refuses_a_response_constant_within_subject(tmp_path):
+    """MATLAB T27: a metadata response constant within every subject makes every fit perfect."""
+    from hdeeg_snpm import lmm_pipeline
+    from hdeeg_snpm.montage import get_montage
+
+    labels = get_montage("egi").labels
+    meta, power = ws_fixture(271, len(labels))
+    meta["sleepDepth"] = meta["age"]
+    path = _write(tmp_path, meta, power, labels)
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm_pipeline.prepare(_ws_params(path, lmm_fixed="group*POWER", lmm_effect="group",
+                                        lmm_effect_type="factor"))
+    assert e.value.code == "dvConstantWithinSubject"
+    assert str(e.value) == (
+        "The response 'sleepDepth' is constant within each subject (within-subject share of its "
+        "variation 0, threshold 1e-06), so every mixed-model fit is a perfect fit and no "
+        "statistic is defined. Analyse subject means with anova1/unpairedT.")
+
+
+def test_level_coding_follows_snpm_lmm_categorize():
+    """MATLAB T23 (second half): a text column that is not converted to categorical keeps its
+    levels in order of first appearance, so the first-appearing level is the reference and the
+    statistic is that of its own dummy; a converted logical group is named group_true."""
+    rng = np.random.default_rng(232)
+    meta, power = long_table(10, 6, 2, rng)
+    meta["cond"] = np.tile(["pre", "post"], len(meta) // 2)       # 'pre' first, not alphabetical
+    meta["DV"] = meta["DV"] + 0.7 * (meta["cond"] == "post")
+    spec = LMMSpec(dv="DV", fixed="POWER + cond", effect="cond_post", effect_type="continuous")
+    coefs, _ = lmm.fixed_names(meta, spec)
+    assert coefs == ["(Intercept)", "cond_post", "POWER"]
+    assert lmm.check_effect(meta, spec) == "cond_post"
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm.check_effect(meta, LMMSpec(dv="DV", fixed="POWER + cond", effect="cond_pre",
+                                       effect_type="continuous"))
+    assert e.value.code == "unknownEffect"
+    # the reference changes the statistic: the t of cond_post is the t of a 0/1 'post' column
+    model = LMM(meta, spec)
+    assert model.names == coefs
+    t = model.fit(power).stat
+    num = meta.assign(post=(meta["cond"] == "post").astype(float))
+    ref = LMM(num, LMMSpec(dv="DV", fixed="POWER + post", effect="post",
+                           effect_type="continuous")).fit(power).stat
+    assert np.allclose(t, ref, rtol=1e-10, atol=0) and (t > 0).all()
+    # and an independent fit (statsmodels MixedLM, ML) with 'pre' as the reference
+    MixedLM = pytest.importorskip("statsmodels.regression.mixed_linear_model").MixedLM
+    fit = model.fit(power)
+    y = meta["DV"].to_numpy()
+    for j in range(power.shape[1]):
+        X = np.column_stack([np.ones(len(meta)), (meta["cond"] == "post").to_numpy(float),
+                             power[:, j]])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sm = MixedLM(y, X, groups=model.gidx).fit(reml=False, gtol=1e-10)
+        tau2 = float(np.asarray(sm.cov_re).ravel()[0])
+        beta, cov, _ = dense_gls(y, X, model.gidx, tau2, sm.scale)
+        assert fit.beta[j, 1] == pytest.approx(beta[1], rel=1e-5)
+        assert t[j] == pytest.approx(beta[1] / np.sqrt(cov[1, 1]), rel=1e-5)
+    # converted (in spec.categorical), the same text is sorted: 'post' becomes the reference
+    conv = LMMSpec(dv="DV", fixed="POWER + cond", effect="cond_pre", effect_type="continuous",
+                   categorical=("Subject", "group", "cond"))
+    assert lmm.fixed_names(meta, conv)[0] == ["(Intercept)", "cond_pre", "POWER"]
+    assert np.allclose(LMM(meta, conv).fit(power).stat, -ref, rtol=1e-8, atol=0)
+    # a logical group, converted as the group always is: group_true, accepted under group_label
+    lg = meta.assign(group=meta["group"] == "G2")
+    for eff in ("group_true", "group_true:POWER"):
+        sp = LMMSpec(dv="DV", fixed="POWER*group", effect=eff, effect_type="continuous",
+                     perm="group_label")
+        assert lmm.check_effect(lg, sp) == eff
+    assert lmm.fixed_names(lg, sp)[0] == ["(Intercept)", "group_true", "POWER",
+                                          "group_true:POWER"]
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm.check_effect(lg, LMMSpec(dv="DV", fixed="POWER*group", effect="group_1",
+                                     effect_type="continuous", perm="group_label"))
+    assert e.value.code == "unknownEffect"
+    # a logical that is not converted: reference False, named <var>_1
+    fl = meta.assign(flag=np.repeat(np.arange(10) % 2 == 0, 6))
+    assert lmm.fixed_names(fl, LMMSpec(dv="DV", fixed="POWER + flag", effect="flag_1",
+                                       effect_type="continuous"))[0][1] == "flag_1"

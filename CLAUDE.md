@@ -41,9 +41,11 @@ nothing may be excluded silently.
   `tier1_guard`, which `pipeline.py` runs before every non-circular analysis.
 - `lmm.py`, `lmm_pipeline.py`: mixed linear model tier, random intercept `(1|Subject)` only
   (closed-form maximum-likelihood fit, `within_subject` and `group_label` schemes, rows with a
-  missing model variable dropped up front; settings that leave nothing to permute refused before
-  any fit; channels constant within each subject (within-subject share <= 1e-6) excluded once
-  when they are the response or the `within_subject` predictor; a per-labelling backstop gives no
+  missing model variable (NaN, empty, +-Inf) dropped up front; settings that leave nothing to
+  permute, and an effect that is not a coefficient or term of the fixed part, refused before any
+  fit; channels constant within each subject (within-subject share <= 1e-6) excluded once when
+  they are the response or the `within_subject` predictor, and flat channels under `group_label`
+  with a metadata response; a per-labelling backstop gives no
   statistic to a fit with no residual variation or a moment subject/residual SD ratio >= 1e3).
 - `missing.py`: which channels can be tested. `pipeline.py`: files to results.
 - `views.py`, `output.py`, `report/`: one description of an effect, then the writers.
@@ -86,10 +88,7 @@ none of its own.
   maximum (`KNOWN_MATLAB_OPTIMISER_SHORTFALLS` in `tests/test_parity_lmm.py`); the effect on
   inference is negligible. Tolerances: `docs/explanation/parity-with-matlab.md`.
 - Mixed linear model formula: the fixed part refuses removing the intercept (`- 1`, `0`), which
-  MATLAB `fitlme` accepts; a factor effect is matched by its set of variables, so `time:group`
-  names the same term as `group:time` (MATLAB matches the term name exactly).
-  An effect that names no coefficient (continuous) or no term (factor) of the fixed part is
-  refused before any fit; MATLAB runs and returns a map that is NaN at every channel.
+  MATLAB `fitlme` accepts.
 - TurtleWave reader (`io/turtlewave.py`) versus the MATLAB repository's `db_to_group_table.py`:
   a database older than TurtleWave 4.3 has no density in the reader, while the bridge divides by
   hypnogram time when given `--allow-hypnogram-denominator`; the reader names a subject by the
@@ -100,9 +99,11 @@ none of its own.
 - Circular tier, reasons for untested channels: the workbook, the HTML report and
   `excluded_reasons` in the `.json` give each channel the route that excluded it (fewer than 8
   subjects per group; log(count) collinear with group; incomplete column under the per-channel
-  covariate), in the wording of the MATLAB parity export. MATLAB's own outputs carry one
-  combined string for every excluded channel (`core_snpm_circ.m`); the `.json` keeps that string
-  word for word as `circular.exclusion_reason`. The channel sets are identical.
+  covariate; for `circ_corrAngLinear`, fewer than 8 subjects with both an angle and a measure
+  value), in the wording of the MATLAB parity export. MATLAB's own outputs carry one string for
+  every excluded channel (`core_snpm_circ.m`; for the two group analyses it combines the three
+  routes); the `.json` keeps that string word for word as `circular.exclusion_reason`. The
+  channel sets are identical.
 
 ## Project notes
 

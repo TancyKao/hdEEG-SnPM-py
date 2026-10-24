@@ -195,6 +195,27 @@ def test_excluded_channels_have_reasons(tmp_path):
     assert any(f"not tested ({both}): E20" in n for n in prep.notes)
 
 
+
+def test_anglinear_exclusion_reason_names_no_groups(tmp_path):
+    """MATLAB test_circ_snpm T13: circ_corrAngLinear is paired by subject, so its only exclusion
+    route is the >=8 gate on subjects with both an angle and a measure value; the reasons say so
+    and do not mention groups."""
+    a = pd.read_csv(DATA / "circ_anglinear_angles.csv")
+    ch = [c for c in a.columns if c.startswith("E")]
+    a.loc[: len(a) - 8, "E5"] = np.nan                # 7 subjects left at E5
+    a.to_csv(tmp_path / "A.csv", index=False)
+    prep = quiet(circ_pipeline.prepare_circ, anglinear_params(data1_file=str(tmp_path / "A.csv")))
+    lab = prep.setup.labels
+    got = {lab[i]: r for i, r in zip(prep.excluded, prep.excluded_reasons)}
+    assert "E5" in ch and got["E5"] == "fewer than 8 subjects with both an angle and a measure value"
+    assert all("group" not in r for r in got.values())
+    assert circ_pipeline.exclusion_reason("circ_corrAngLinear") == (
+        "not estimable: fewer than 8 subjects with both an angle and a measure value")
+    assert circ_pipeline.exclusion_reason("circ_phase_group") == (
+        "not estimable: fewer than 8 subjects per group, incomplete column under a per-channel "
+        "covariate, or log(count) collinear with group")
+
+
 # ---------------------------------------------------------------------------- recovery
 
 def test_planted_shift_recovered_and_null_split_quiet(tmp_path):
@@ -288,7 +309,7 @@ def test_writes_results_workbook_and_report(make, tmp_path):
     assert e["cluster_statistic"] == "mass" and s["alpha"] == 0.05
     c = e["circular"]
     assert c["descriptive"]["note"].startswith("Descriptive only")
-    assert c["exclusion_reason"] == circ_pipeline.EXCLUSION_REASON
+    assert c["exclusion_reason"] == circ_pipeline.exclusion_reason(c["comparison"])
     assert s["tfce"]["dh"] == (0.005 if c["statistic"] == "watson_U2" else 0.1)
     z = np.load(paths["npz"])
     assert {"main/stat", "main/tfce", "main/p_tfce", "main/evaluable",

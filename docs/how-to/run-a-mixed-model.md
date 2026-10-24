@@ -113,30 +113,55 @@ These checks run before any model is fitted. The run stops, and says why, when:
 
 - `tail` is not `both` (`oneSidedTail`): the map is a two-sided t or an F, and clusters are
   formed on the two-sided model p;
-- under `group_label`, `lmm_effect` does not contain the group column (`effectNotPermuted`);
+- under `group_label`, `lmm_effect` does not contain the group column (`effectNotPermuted`). A
+  part of the effect counts as the group column when it is the column itself or a coefficient of
+  it (`group_B`, `group_true`, also inside an interaction such as `group_B:POWER`); another
+  column whose name merely starts with it, such as `group_size`, does not count;
 - under `within_subject`, the response is `POWER` or is not listed in `lmm_meta_cols`
   (`dvNotMetadata`);
-- under `within_subject`, the response is constant within every subject: the share of its
-  variation that lies within subjects is at most 1e-6 (`dvConstantWithinSubject`);
+- a metadata response is constant within every subject: the share of its variation that lies
+  within subjects is at most 1e-6 (`dvConstantWithinSubject`). Under `within_subject` the
+  shuffle has nothing to permute; under `group_label` every fit would be a perfect fit. Analyse
+  subject means with `anova1` or `unpairedT` instead;
+- under `within_subject`, every variable of the effect is constant within each subject
+  (`effectConstantWithinSubject`): for example `group`, `group_B` or a subject-level covariate
+  such as age. Shuffling the response inside each subject leaves every subject's mean in place,
+  so such an effect barely moves under the shuffle and there is no null for it (in simulation
+  the false-positive rate reached 0.35 at a nominal 0.05). The check takes the largest
+  within-subject share among the effect's variables (a text column through one indicator per
+  level) and refuses at 1e-6 or below. An effect containing `POWER`, or any variable that varies
+  within subjects (`group:time`), runs. Use `group_label` for a between-group effect;
 
 - the random part is anything but `(1|<column>)`: random slopes such as `(POWER|Subject)`,
   several grouping columns, and crossed effects such as `(1|Subject) + (1|time)` are not
   available in this version;
 - the fixed part removes the intercept (`- 1`, `0`), or contains a term that cannot be read;
 - `POWER` is both the response and a fixed effect, or neither;
-- `lmm_effect` is not a term (factor) or a coefficient (continuous) of `lmm_fixed`;
+- `lmm_effect` is not a term (factor) or a coefficient (continuous) of `lmm_fixed`
+  (`unknownEffect`). The message lists the terms or coefficients as `fitlme` names them: terms
+  joined with `:` in table order and without the intercept, coefficients as `<column>_<level>`
+  for a categorical column. A factor term may be written in any variable order: `POWER:group`
+  is taken as `group:POWER`, and the outputs use that name. Which level is the reference (and so
+  which coefficients exist, and the sign of their t) follows `fitlme`: the subject, group and
+  grouping columns are converted to categories, sorted (text alphabetically, numbers in numeric
+  order, a true/false column as `group_false`, `group_true`); any other text column keeps its
+  levels in the order they first appear in the file, the first being the reference (with `pre`
+  in the first row the coefficient is `cond_post`); a true/false column that is not converted
+  has reference false and coefficient `<column>_1`; a numeric column is a continuous predictor.
+  Under `group_label`, a coefficient of a group level that is not in the data (`group_C`) is
+  refused as `unknownEffect`, with the real coefficients listed;
 - a column the model needs is not in the file;
 - fewer than 3 subjects are left once incomplete rows are dropped;
 - under `group_label`, a subject's group changes between its rows, or a group has fewer than 2
   subjects (relabelling cannot build a null for a one-subject group);
 - the number of channels does not match the recording system, or no channel is left to test
-  once incomplete and constant-within-subject channels are removed (`noEvaluableChannels`; the
-  message lists the reasons).
+  once incomplete, constant-within-subject and flat channels are removed
+  (`noEvaluableChannels`; the message lists the reasons).
 
 ## Missing values
 
-**Rows with a missing model variable are dropped first.** A row with an empty cell in the
-response, a fixed-effect variable, the grouping or subject column, or (under `group_label`) the
+**Rows with a missing model variable are dropped first.** A row with an empty cell (or, in a
+numeric column, +Inf or -Inf) in the response, a fixed-effect variable, the grouping or subject column, or (under `group_label`) the
 group column cannot enter the model at any channel, so it is removed from the metadata and the
 channel matrix together before anything else. The run warns with the number of rows dropped,
 the count per column, and any subject left with no rows. The record is kept in every output:
@@ -172,6 +197,14 @@ A channel with a share of at most 1e-6 is excluded when:
   subject: its effect is between-subject only, which the within-subject shuffle cannot test (use
   group_label or regression on subject means)". Left in, such a channel keeps the same t in every
   permuted map and sets the maximum-statistic threshold for the whole head.
+
+Under `group_label` with a metadata response and `POWER` as a predictor, a channel constant
+within each subject is kept: relabelling whole subjects moves each subject's response and
+channel value together, so the channel acts as a subject-level covariate and its null is sound.
+Only a channel with one value on every trial is excluded there, with the reason "same value in
+every subject", because it cannot be told apart from the intercept at any labelling. (MATLAB
+also excludes subject-constant channels when the random part has a `POWER` slope by subject;
+this package fits a random intercept only, so the case does not arise.)
 
 The share of every channel is kept in the `.npz` file as `within_ratio` (NaN for an incomplete
 channel), so a channel near the line can be checked.

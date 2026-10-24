@@ -127,8 +127,9 @@ def test_3_paired_differences_of_plus_minus_one_are_tested(egi_graph):
     d = np.array([1, -1, 1, 1, -1, 1, -1, 1], float)
     y = x.copy() - rng.standard_normal((8, N_CH))
     y[:, 3] = x[:, 3] - d
-    # include the sign flip that makes every difference +1 (a zero error term) and its mirror
-    perms = np.vstack([d > 0, d < 0, rng.random((60, 8)) > 0.5])
+    # row 0 the observed labelling (required by the legacy b / N p), then the sign flip that
+    # makes every difference +1 (a zero error term) and its mirror
+    perms = np.vstack([np.ones(8, bool), d > 0, d < 0, rng.random((60, 8)) > 0.5])
     T = legacy.single_threshold_tfce(x, y, egi_graph, "pairedT", perms=perms)
     C = legacy.cluster_analysis(x, y, 2.36, egi_graph, "pairedT", perms=perms)
     assert np.isfinite(T.real_T).all() and np.isfinite(T.tMaxTFCE).all()

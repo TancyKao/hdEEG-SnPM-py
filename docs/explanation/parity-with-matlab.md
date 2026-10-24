@@ -38,9 +38,9 @@ value; none occurs.)
 
 ## What has been checked (18 October 2026)
 
-39 reference runs, checked by 73 tests, all passing:
+41 reference runs, checked by 75 tests, all passing:
 
-- 31 t-test and correlation runs: paired, unpaired and one-sample t-tests (both tails, and left
+- 33 t-test and correlation runs: paired, unpaired and one-sample t-tests (both tails, and left
   and right for paired and unpaired); Pearson and Spearman correlation, channel against channel
   and against one behavioural score, with and without covariates; small samples where every
   relabelling is enumerated; data with missing cells, a channel missing in one group, and a
@@ -165,6 +165,11 @@ each item on it and adds none.
   refits any channel whose subject SD comes back at the boundary from a second start and keeps
   the better fit (`snpm_lmm_fitlme.m`), so the two programs agree to the tolerances above, apart
   from the few permuted fits where `fitlme` still stops short of the maximum (listed above).
+- **Mixed-model formula without an intercept**: a fixed part that removes the intercept
+  (`- 1`, `0`) is refused here; MATLAB's `fitlme` accepts it. Every other check on the formula
+  and the effect is shared: both programs refuse an effect that names no coefficient
+  (continuous) or term (factor) of the fixed part, listing the names, and both match a factor
+  term whatever the order of its variables (`POWER:group` is `group:POWER`).
 - **TurtleWave reader versus `db_to_group_table.py`**: the MATLAB repository's bridge script and
   this package's reader build the same tables from TurtleWave databases but differ in four
   places. A database older than TurtleWave 4.3 has no density in the reader, while the bridge
@@ -174,14 +179,17 @@ each item on it and adds none.
   stops the reader and is an empty row in the bridge. The reasons are in
   [Read TurtleWave databases](../how-to/read-turtlewave-databases.md#compared-with-db_to_group_tablepy).
 - **Reasons for untested channels in the circular tier**: a channel can be left out of a
-  circular analysis for three reasons: fewer than 8 subjects in a group, log(count) collinear
-  with group, or a column with missing angles at a channel that uses the per-channel count
-  covariate. The workbook, the HTML report and `excluded_reasons` in the `.json` file name the
-  reason that applies to each channel, in the words of MATLAB's parity export. MATLAB's own
-  report, workbook and results struct give one combined sentence listing all three reasons for
-  every excluded channel, so a reader cannot tell which one applied. That sentence is kept word
-  for word in the `.json` file as `circular.exclusion_reason`. The set of excluded channels is
-  the same in both programs.
+  two-group circular analysis for three reasons: fewer than 8 subjects in a group, log(count)
+  collinear with group, or a column with missing angles at a channel that uses the per-channel
+  count covariate. The circular-linear analysis (`circ_corrAngLinear`) has no groups and no
+  count covariate, so its only reason is fewer than 8 subjects with both an angle and a measure
+  value. The workbook, the HTML report and `excluded_reasons` in the `.json` file name the
+  reason that applies to each channel, in the words of MATLAB's parity export. For the two group
+  analyses MATLAB's own report, workbook and results struct give one combined sentence listing
+  all three reasons for every excluded channel, so a reader cannot tell which one applied. That
+  sentence (or, for `circ_corrAngLinear`, MATLAB's single reason) is kept word for word in the
+  `.json` file as `circular.exclusion_reason`. The set of excluded channels is the same in both
+  programs.
 
 Channels with no variance, and non-finite cells such as the log of zero power, were once listed
 here. MATLAB now handles both the same way (the channel is excluded with a reason; a non-finite
@@ -240,6 +248,28 @@ and `mixed2way:*` of the results file):
 | mixed2way group, condition effect present, one group missing cells | 0.044 | 0.053 |
 | mixed2way condition, full null | 0.041 | 0.046 |
 | mixed2way group, full null | 0.053 | 0.043 |
+
+## Shared defect fixed on 20 October 2026: the observed labelling counted twice
+
+In the t-tests and correlations (with or without covariates) the observed labelling is one of
+the N labellings the program evaluates: row 1 of a random draw, or one member of a full
+enumeration. It is already counted in b, the number of labellings whose maximum reaches the
+observed value, yet the corrected p was (b + 1) / (N + 1), which counted it a second time.
+Both programs now report b / N for these analyses, with N counting the observed labelling. Under
+full enumeration this is the exact permutation p (Nichols & Holmes 2001); with random draws it
+equals (b' + 1) / ((N - 1) + 1), b' counting the N - 1 random draws only, which is the Phipson &
+Smyth (2010) estimator. The old value was conservative, never invalid: every corrected p falls
+by less than 1/(N + 1), which is negligible at 10000 permutations but decisive with few subjects
+and full enumeration. A paired test on 5 subjects, one-sided, now has a smallest p of 1/32 =
+0.031 (it was 2/33 = 0.061, so it could never reach 0.05). Two unpaired groups of 3 have a
+smallest p of 1/20 = 0.05 one-sided and 2/20 = 0.10 two-sided, where the mirror labelling ties
+the observed one. The group designs, the mixed model and the circular analyses draw N labellings
+that do not include the observed one and keep (b + 1) / (N + 1).
+
+The fix was made in both programs on 20 October 2026 and the reference files were regenerated
+in MATLAB the same day; all 33 t-test and correlation runs and all 9 workbooks agree again. A
+permutation matrix handed to these analyses (`perms=`, `perms_tfce=`, `perms_cluster=`) must
+contain the observed labelling, since b / N counts it; one without it is refused.
 
 ## False-positive rates, checked without MATLAB
 

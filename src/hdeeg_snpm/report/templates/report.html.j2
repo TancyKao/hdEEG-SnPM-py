@@ -82,7 +82,7 @@ Channels significant at p ≤ {{ alpha }}: {{ e.n_unc }} uncorrected, <span clas
 {% endfor %}
 
 <footer>
-{{ permutations_text }} Random seed {{ seed }}. p-values are (b + 1) / (N + 1), where b is the number of permutations whose maximum reaches the observed value.
+{{ permutations_text }} Random seed {{ seed }}. {{ p_text }}
 TFCE: E = 0.5, H = 2, step {{ tfce_dh }}. Produced by hdeeg-snpm {{ version }}.
 </footer>
 </main></body></html>

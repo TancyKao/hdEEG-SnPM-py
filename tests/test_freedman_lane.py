@@ -146,7 +146,8 @@ def test_f3_regression_preset_oracle(tmp_path, data):
                      for o in orders])
     tobs, pobs, _, _ = glm.glm_stat(Y, d.X, d.C)
     tmax = np.sort(tmax)[::-1]
-    pg = legacy._fwe_p(tobs, tmax, True)
+    # the orders include the identity (row 0), so the legacy convention b / N applies to both
+    pg = legacy._fwe_p(tobs, tmax, True, identity_in_null=True)
     assert np.array_equal(pg, res.T.p_corrected)
     np.testing.assert_allclose(res.T.p_real, pobs, rtol=1e-10, atol=1e-14)
 

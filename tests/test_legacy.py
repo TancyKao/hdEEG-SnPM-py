@@ -136,3 +136,133 @@ def test_tie_counting_rule():
     # a NaN null maximum is dropped from the count but kept in N
     p = legacy._fwe_p(np.array([1.0, np.nan]), null, two_sided=False)
     assert p[0] == 3 / 6 and np.isnan(p[1])
+
+
+# ------------------------------------------------- ruling D: observed labelling counted once
+
+def _one_channel():
+    from hdeeg_snpm.clusters import ChannelGraph
+    return ChannelGraph(np.full((1, 1), -1))
+
+
+def test_exact_paired_p_counts_observed_once():
+    """4 subjects, distinct positive differences, right tail, all 16 sign flips: p = 1/16."""
+    x = np.array([[1.0], [2.0], [3.5], [5.0]])
+    y = np.zeros_like(x)
+    g = _one_channel()
+    res = legacy.single_threshold_tfce(x, y, g, "pairedT", tail="right")
+    assert res.n_perm == 16
+    assert res.p_corrected[0] == 1 / 16 and res.p_correctedTFCE[0] == 1 / 16
+    thr = (res.tMax[0] + res.tMax[1]) / 2           # only the observed labelling forms a cluster
+    cl = legacy.cluster_analysis(x, y, thr, g, "pairedT", tail="right")
+    assert [c.p for c in cl.clusters] == [1 / 16]
+
+
+def test_exact_unpaired_two_sided_mirror_ties():
+    """3 vs 3 perfectly separated, two-sided, all 20 splits: the mirror ties, p = 2/20."""
+    x = np.array([[10.0], [11.0], [12.5]])
+    y = np.array([[0.0], [1.5], [2.0]])
+    g = _one_channel()
+    res = legacy.single_threshold_tfce(x, y, g, "unpairedT", tail="both")
+    assert res.n_perm == 20
+    assert res.p_corrected[0] == 2 / 20 and res.p_correctedTFCE[0] == 2 / 20
+    thr = (res.tMax[1] + res.tMax[2]) / 2           # only the observed split and its mirror
+    cl = legacy.cluster_analysis(x, y, thr, g, "unpairedT", tail="both")
+    assert [c.p for c in cl.clusters if c.channels.size] == [2 / 20]
+
+
+@pytest.mark.parametrize("comparison", ["pairedT", "unpairedT", "correlationP"])
+def test_monte_carlo_p_is_phipson_smyth_over_random_rows(egi_graph, comparison):
+    """Random draws: p = (b' + 1) / N, b' counting rows 2..N (row 1 is the observed labelling)."""
+    x, y, _ = planted(egi_graph, n=12, effect=0.8, seed=5)
+    x, y = x[:, :20], y[:, :20]
+    from hdeeg_snpm.clusters import ChannelGraph
+    sub = ChannelGraph(np.where(egi_graph.dense[:20, :20], np.arange(20)[None, :], -1))
+    n_perm = 150
+    res = legacy.single_threshold_tfce(x, y, sub, comparison, n_perm=n_perm,
+                                       rng=np.random.default_rng(1))
+    design = legacy._design(x, y, comparison, "both")
+    rows = res.perms
+    assert n_perm < design.default_n_perm()
+    null = np.array([np.nanmax(np.abs(design.stat(r))) for r in rows])
+    obs = np.abs(res.real_T)
+    assert np.isclose(null[0], np.nanmax(obs), rtol=1e-12)        # row 1 is the observed one
+    b_random = legacy._at_least(null[1:][None, :], obs[:, None]).sum(axis=1)
+    np.testing.assert_array_equal(res.p_corrected, (b_random + 1) / n_perm)
+
+
+def test_exact_null_calibration():
+    """Paired, 6 subjects, exact (64 flips), H0: rejection rate at k/64 is k/64.
+
+    The old (b + 1) / (N + 1) gave 3/64 at alpha = 4/64.
+    """
+    from hdeeg_snpm import perm
+    rng = np.random.default_rng(20261020)
+    n_sim, n_subj = 20000, 6
+    signs = np.where(perm.signflip_patterns(n_subj, 64, rng), 1.0, -1.0)   # (64, 6)
+    d = rng.standard_normal((n_sim, n_subj))
+    flipped = d[:, None, :] * signs[None, :, :]                           # (sim, 64, 6)
+    t = flipped.mean(-1) / (flipped.std(-1, ddof=1) / np.sqrt(n_subj))
+    obs = t[:, -1]                                                         # all-True row
+    p = np.array([legacy._fwe_p(obs[i:i + 1], np.sort(t[i])[::-1], False,
+                                identity_in_null=True)[0] for i in range(n_sim)])
+    se = np.sqrt((4 / 64) * (60 / 64) / n_sim)
+    assert abs(np.mean(p <= 4 / 64) - 4 / 64) < 0.004
+    for k in range(1, 9):
+        a = k / 64
+        assert np.mean(p <= a + 1e-12) <= a + 4 * se
+        assert abs(np.mean(p <= a + 1e-12) - a) < 4 * np.sqrt(a * (1 - a) / n_sim)
+
+
+def _identity_free_perms(comparison, n):
+    """A supplied labelling set that lacks the observed labelling."""
+    if comparison == "pairedT":
+        return np.array([[False, True, True, True], [True, False, True, True],
+                         [True, True, False, True]])
+    if comparison == "unpairedT":                       # 3 vs 3: group 1 never {0, 1, 2}
+        return np.array([[3, 4, 5, 0, 1, 2], [0, 1, 3, 2, 4, 5], [1, 2, 4, 0, 3, 5]])
+    rng = np.random.default_rng(0)
+    rows = [rng.permutation(n) for _ in range(5)]
+    return np.array([r for r in rows if not np.array_equal(r, np.arange(n))])
+
+
+@pytest.mark.parametrize("comparison,n1,n2", [("pairedT", 4, 4), ("unpairedT", 3, 3),
+                                              ("correlationP", 6, 6)])
+def test_supplied_perms_without_observed_labelling_are_refused(comparison, n1, n2):
+    """b / N needs the observed labelling among the rows; a matrix without it is refused."""
+    rng = np.random.default_rng(3)
+    x, y = rng.standard_normal((n1, 1)) + 1.0, rng.standard_normal((n2, 1))
+    g = _one_channel()
+    perms = _identity_free_perms(comparison, n1)
+    tail = "right" if comparison == "pairedT" else "both"
+    with pytest.raises(ValueError, match="must contain the observed labelling"):
+        legacy.single_threshold_tfce(x, y, g, comparison, tail=tail, perms=perms)
+    with pytest.raises(ValueError, match="must contain the observed labelling"):
+        legacy.cluster_analysis(x, y, 1.0, g, comparison, tail=tail, perms=perms)
+
+
+@pytest.mark.parametrize("comparison,n1,n2", [("pairedT", 4, 4), ("unpairedT", 3, 3),
+                                              ("correlationP", 6, 6)])
+def test_supplied_perms_with_observed_labelling_are_accepted(comparison, n1, n2):
+    """MATLAB's exported matrices hold the identity (sign flips: the last enumerated row;
+    relabelling: row 1, possibly with group 1 in another order; orderings: row 1)."""
+    rng = np.random.default_rng(3)
+    x, y = rng.standard_normal((n1, 1)) + 1.0, rng.standard_normal((n2, 1))
+    g = _one_channel()
+    perms = _identity_free_perms(comparison, n1)
+    identity = {"pairedT": np.ones(4, bool), "unpairedT": np.array([2, 0, 1, 3, 4, 5]),
+                "correlationP": np.arange(6)}[comparison]
+    perms = np.vstack([perms, identity[None, :].astype(perms.dtype)])
+    tail = "right" if comparison == "pairedT" else "both"
+    res = legacy.single_threshold_tfce(x, y, g, comparison, tail=tail, perms=perms)
+    assert np.all(res.p_corrected >= 1 / perms.shape[0])
+    legacy.cluster_analysis(x, y, 1.0, g, comparison, tail=tail, perms=perms)
+
+
+def test_report_states_the_p_convention_of_each_tier():
+    from hdeeg_snpm.report.html import _p_text
+    for comparison in legacy.COMPARISONS:
+        assert _p_text(comparison).startswith("p-values are b / N, where N counts the observed")
+    for comparison in ("anova1", "ancova", "regression", "rmanova", "mixed2way", "mixedmodel",
+                       "circ_phase_group", "circ_phase_group_u2", "circ_corrAngLinear"):
+        assert _p_text(comparison).startswith("p-values are (b + 1) / (N + 1)")

@@ -190,6 +190,9 @@ class _Paired:
     def draw(self, n_perm, rng):
         return _perm.signflip_patterns(self.n_subj, n_perm, rng)
 
+    def is_identity(self, row):
+        return bool(np.all(np.asarray(row, bool)))
+
     def stat(self, row):
         return paired_t(np.where(np.asarray(row, bool)[:, None], self.d, -self.d))[0]
 
@@ -214,6 +217,10 @@ class _Unpaired:
 
     def draw(self, n_perm, rng):
         return _perm.relabel_assignments(self.data.shape[0], self.n1, n_perm, rng)
+
+    def is_identity(self, row):
+        # the observed split: the first n1 rows of the data in group 1, in any order
+        return set(np.asarray(row, int)[:self.n1].tolist()) == set(range(self.n1))
 
     def stat(self, row):
         row = np.asarray(row, int)
@@ -279,6 +286,9 @@ class _Correlation:
     def draw(self, n_perm, rng):
         return _perm.row_permutations(self.n_subj, n_perm, rng)
 
+    def is_identity(self, row):
+        return bool(np.array_equal(np.asarray(row, int), np.arange(self.n_subj)))
+
     def stat(self, row):
         row = np.asarray(row, int)
         if self.fl is None:
@@ -343,8 +353,20 @@ def _design(x, y, comparison, tail, fl: FLContext | None = None):
 
 
 def _resolve_perms(design, n_perm, rng, perms):
+    """The labellings to evaluate. The legacy p is b / N, which is valid only when the observed
+    labelling is one of the N rows, so a supplied matrix without it is refused (switching to
+    (b + 1) / (N + 1) silently would hide a malformed input). The generated sets always hold it.
+    """
     if perms is not None:
-        return np.asarray(perms)
+        perms = np.asarray(perms)
+        if perms.ndim != 2 or perms.shape[0] == 0 or not any(design.is_identity(r) for r in perms):
+            kind = {"_Paired": "the all-True sign-flip row",
+                    "_Unpaired": "the observed split (group 1 = the first n1 subjects)",
+                    }.get(type(design).__name__, "the identity ordering 0..n-1")
+            raise ValueError(f"perms must contain the observed labelling ({kind}): the "
+                             f"t-test and correlation p is b / N with the observed labelling "
+                             f"counted among the N rows.")
+        return perms
     if n_perm is None:
         n_perm = design.default_n_perm()
     return design.draw(int(n_perm), rng if rng is not None else np.random.default_rng())
@@ -378,13 +400,29 @@ def _at_least(null, value):
     return null >= value - slack
 
 
-def _fwe_p(observed: np.ndarray, null_max: np.ndarray, two_sided: bool) -> np.ndarray:
-    """(count of null maxima >= observed, plus 1) / (N + 1); NaN where the observed is NaN."""
+def _fwe_p(observed: np.ndarray, null_max: np.ndarray, two_sided: bool,
+           identity_in_null: bool = False) -> np.ndarray:
+    """Family-wise corrected p from a max-statistic null; NaN where the observed is NaN.
+
+    ``identity_in_null=False`` (GLM, mixed-model and circular tiers): the N labellings are fresh
+    draws that do not include the observed one, so p = (b + 1) / (N + 1).
+
+    ``identity_in_null=True`` (legacy tier): the observed labelling is already one of the N rows
+    of the null (row 1 of a Monte-Carlo draw, or inside an exact enumeration) and is counted in
+    b, so p = b / N (method spec 2026-10-20, ruling D; Nichols & Holmes 2001; Phipson & Smyth
+    2010). b >= 1, so p is never zero. Under exact enumeration b / N is the exact permutation p;
+    under Monte-Carlo it equals (b' + 1) / ((N - 1) + 1), b' counting the N - 1 random draws,
+    which is the Phipson & Smyth estimator. Adding 1 again would count the identity twice (the
+    pre-2026-10-20 formula).
+    """
     obs = np.abs(observed) if two_sided else observed
     null = null_max[~np.isnan(null_max)]
     with np.errstate(invalid="ignore"):
         count = _at_least(null[None, :], obs[:, None]).sum(axis=1)
-    p = (count + 1) / (null_max.size + 1)
+    if identity_in_null:
+        p = count / null_max.size
+    else:
+        p = (count + 1) / (null_max.size + 1)
     return np.where(np.isnan(observed), np.nan, p)
 
 
@@ -436,8 +474,9 @@ def single_threshold_tfce(x, y, graph: ChannelGraph, comparison: str, tail: str 
     return MaxStatResult(
         real_T=real_T, real_TFCE=real_TFCE, tMax=t_max, tMaxTFCE=t_max_tfce,
         chk_T=maps.mean(axis=0), critical_T=t_max[crit], critical_T_TFCE=t_max_tfce[crit],
-        p_real=p_real, p_corrected=_fwe_p(real_T, t_max, two_sided),
-        p_correctedTFCE=_fwe_p(real_TFCE, t_max_tfce, two_sided), n_perm=n, perms=perms)
+        p_real=p_real, p_corrected=_fwe_p(real_T, t_max, two_sided, identity_in_null=True),
+        p_correctedTFCE=_fwe_p(real_TFCE, t_max_tfce, two_sided, identity_in_null=True),
+        n_perm=n, perms=perms)
 
 
 @dataclass
@@ -483,14 +522,21 @@ def cluster_analysis(x, y, threshold: float, graph: ChannelGraph, comparison: st
     for thr in thresholds:
         found = find_clusters(real_stat, thr, graph) or [np.empty(0, dtype=int)]
         clusters += [Cluster(c, thr, 1.0, n) for c in found]
+    # FWE p with the observed labelling counted ONCE (ruling D, 2026-10-20): p = b / N. The
+    # observed (identity) labelling is one of the N rows of the null and its largest cluster is
+    # found by the same find_clusters call on the same map, so it is >= every observed cluster:
+    # b >= 1 and p is never zero. Do not add 1 to numerator and denominator; that counts the
+    # identity twice. The GLM, mixed-model and circular tiers draw labellings without the
+    # identity and keep (b + 1) / (N + 1). Cluster sizes are integers, so the plain >= is exact.
+    # An empty (no-channel) cluster has size 0, so every null is >= it and p = 1.
     if two_sided:
         null = np.sort(sizes.max(axis=1))[::-1]
         for c in clusters:
-            c.p = ((null >= c.channels.size).sum() + 1) / (n + 1)
+            c.p = (null >= c.channels.size).sum() / n
     else:
         null = np.sort(sizes, axis=0)[::-1]
         for c in clusters:
-            c.p = ((null[:, 0] >= c.channels.size).sum() + 1) / (n + 1)
+            c.p = (null[:, 0] >= c.channels.size).sum() / n
     return ClusterResult(clusters, real_stat, null, perms)
 
 

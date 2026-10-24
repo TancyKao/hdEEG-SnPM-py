@@ -61,6 +61,7 @@ CONST_PREDICTOR = ("predictor constant within each subject: its effect is betwee
                    "which the within-subject shuffle cannot test (use group_label or regression on "
                    "subject means)")
 PERFECT_FIT = "perfect fit, statistic undefined"
+FLAT = "same value in every subject"
 
 
 class UnsupportedRandomEffects(ValueError):
@@ -123,9 +124,10 @@ def _terms(fixed: str, columns=()) -> list[tuple[str, ...]]:
     """Fixed-effect terms (tuples of variable names) in fitlme's order.
 
     fitlme sees the metadata table with the channel appended as its last variable, ``POWER``, and
-    orders terms by degree, then by the table position of their variables; the variables inside an
-    interaction are in table order too. So ``POWER + group`` gives ``(Intercept), group_G2,
-    group_G3, POWER``. Variables not in ``columns`` sort after ``POWER``, as written."""
+    orders terms by degree, then by the table position of their variables compared from the last
+    one (``x1:x3, x2:x3, x1:x4``; checked against ``classreg.regr.LinearFormula``); the variables
+    inside an interaction are in table order too. So ``POWER + group`` gives ``(Intercept),
+    group_G2, group_G3, POWER``. Variables not in ``columns`` sort after ``POWER``, as written."""
     out: list[tuple[str, ...]] = []
     for piece in fixed.split("+"):
         piece = piece.strip()
@@ -147,16 +149,94 @@ def _terms(fixed: str, columns=()) -> list[tuple[str, ...]]:
     pos.setdefault("POWER", len(pos))
     rank = lambda v: pos.get(v, len(pos) + 1)
     out = [tuple(sorted(t, key=rank)) for t in out]
-    return sorted(out, key=lambda t: (len(t), [rank(v) for v in t]))
+    return sorted(out, key=lambda t: (len(t), [rank(v) for v in reversed(t)]))
 
 
-def _sorted_levels(x: pd.Series) -> list:
-    """Levels as MATLAB ``categorical`` orders them: sorted values."""
-    vals = pd.unique(x)
-    try:
-        return sorted(vals)
-    except TypeError:
-        return sorted(vals, key=str)
+def _num_label(v) -> str:
+    """A number as a category name: a whole number without '.0'."""
+    if isinstance(v, (float, np.floating)) and float(v).is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def factor_coding(col: pd.Series, converted: bool):
+    """How fitlme codes one metadata variable, as ``snpm_lmm_categorize.m`` prepares it.
+
+    Returns ``None`` for a continuous predictor, else ``(levels, labels)``: every level in
+    fitlme's order (the first is the reference, the rest get one dummy column each, named
+    ``<var>_<label>``). The one place both the fit and :func:`check_effect` take this from, since
+    the reference level changes the statistic, not only the names.
+
+    - converted (in ``spec.categorical``; default subject, group, random grouping):
+      ``categories(categorical(x))``: text sorted, numbers in numeric order, logical
+      ``false``, ``true``; a column already categorical keeps its own order;
+    - text not converted: order of first appearance in the fitted rows;
+    - categorical as read: its own order;
+    - logical not converted: reference ``False``, coefficient ``<var>_1``;
+    - numeric not converted: continuous.
+    """
+    if isinstance(col.dtype, pd.CategoricalDtype):
+        present = set(pd.unique(col.dropna()))
+        lev = [c for c in col.cat.categories if c in present]
+        return lev, [_num_label(c) for c in lev]
+    present = list(pd.unique(col))
+    if pd.api.types.is_bool_dtype(col):
+        lev = [v for v in (False, True) if v in present]
+        return lev, [("true" if v else "false") if converted else ("1" if v else "0")
+                     for v in lev]
+    if pd.api.types.is_numeric_dtype(col):
+        if not converted:
+            return None
+        lev = sorted(present)
+        return lev, [_num_label(v) for v in lev]
+    if converted:
+        lev = sorted(present, key=str)
+    else:
+        lev = present                              # first appearance in the fitted rows
+    return lev, [str(v) for v in lev]
+
+
+def _default_categorical(spec: LMMSpec) -> set:
+    """``lmm_categorical_vars`` of core_snpm_lmm.m: subject, group and the random grouping."""
+    if spec.categorical is not None:
+        return set(spec.categorical)
+    return {spec.subject, spec.group, spec.grouping}
+
+
+def _cross(names_so_far: list, names_v: list) -> list:
+    """Coefficient names of an interaction, the first variable varying fastest (fitlme)."""
+    return [f"{a}:{b}" if a else b for b in names_v for a in names_so_far]
+
+
+def fixed_names(meta: pd.DataFrame, spec: LMMSpec) -> tuple[list[str], list[str]]:
+    """``(coefficients, terms)`` of the fixed part as fitlme names them, built from the metadata
+    without a fit (``snpm_lmm_check_effect.m``): the channel is the last variable, ``POWER``;
+    terms in fitlme's order without the intercept, ':'-joined; a categorical variable contributes
+    reference-coded columns ``<var>_<level>`` for every level after the first."""
+    cols = [str(c) for c in meta.columns if c != "POWER"]
+    terms = _terms(spec.fixed, cols)
+    cats = _default_categorical(spec)
+    coefs = ["(Intercept)"]
+    for t in terms:
+        nm = [""]
+        for v in t:
+            code = (None if v == "POWER" or v not in meta.columns
+                    else factor_coding(meta[v], v in cats))
+            nv = [v] if code is None else [f"{v}_{lb}" for lb in code[1][1:]]
+            nm = _cross(nm, nv)
+        coefs += nm
+    return coefs, [":".join(t) for t in terms]
+
+
+def _unknown_effect(spec: LMMSpec, coefs, terms):
+    """``core_snpm_lmm:unknownEffect``, MATLAB's text word for word."""
+    if spec.effect_type == "factor":
+        msg = (f"Effect '{spec.effect}' is not a term of the fixed part '{spec.fixed}' "
+               f"(terms: {', '.join(terms)})")
+    else:
+        msg = (f"Effect '{spec.effect}' is not a coefficient of the fixed part '{spec.fixed}' "
+               f"(coefficients: {', '.join(coefs)})")
+    return LMMInputError("unknownEffect", msg)
 
 
 # --------------------------------------------------------------------------- missing metadata
@@ -186,15 +266,9 @@ def check_design(spec: LMMSpec, tail: str = "both", meta_columns=None):
             "an F, and clusters are formed on the two-sided model p; a one-sided TFCE null of "
             "signed maxima would not match it.")
     if spec.perm == "group_label":
-        # a token names the group column itself, or one of its coefficients (group_B)
-        effect_vars = [v.strip() for v in re.split(r"[:*]", spec.effect)]
-        if not any(v == spec.group or v.startswith(spec.group + "_") for v in effect_vars):
-            raise LMMInputError(
-                "effectNotPermuted",
-                f"The group_label scheme relabels subjects between levels of '{spec.group}', but "
-                f"the effect '{spec.effect}' does not contain '{spec.group}', so every permuted map "
-                "would equal the observed one. Use within_subject for an effect that varies "
-                "within subjects, or test an effect of the group column.")
+        # coarse form (the group levels are not known yet): a token is the group column or
+        # starts with '<group>_'; the exact '<group>_<level>' rule is check_effect's
+        _check_group_token(spec)
     elif spec.dv == "POWER" or (meta_columns is not None and spec.dv not in meta_columns):
         raise LMMInputError(
             "dvNotMetadata",
@@ -204,10 +278,111 @@ def check_design(spec: LMMSpec, tail: str = "both", meta_columns=None):
             + " Use group_label for a between-group effect on the channel value.")
 
 
+def _check_group_token(spec: LMMSpec, grp_coef=None, columns=()):
+    """``effectNotPermuted``: under group_label a token of the effect (split on ':' and '*') must
+    be the group column or a coefficient of it. Without the metadata (``grp_coef`` None) any
+    '<group>_' prefix passes. With it, a token passes when it is one of the group's coefficient
+    names ``grp_coef``, or starts with '<group>_' without being another column: ``group_C`` for a
+    level not in the data is left to ``unknownEffect``, whose message lists the real
+    coefficients, while another column such as ``group_size`` is never the group."""
+    g = spec.group
+    toks = [v.strip() for v in re.split(r"[:*]", spec.effect)]
+    if grp_coef is None:
+        hit = any(v == g or v.startswith(g + "_") for v in toks)
+    else:
+        hit = any(v == g or v in grp_coef or (v.startswith(g + "_") and v not in columns)
+                  for v in toks)
+    if not hit:
+        raise LMMInputError(
+            "effectNotPermuted",
+            f"The group_label scheme relabels subjects between levels of '{spec.group}', but "
+            f"the effect '{spec.effect}' does not contain '{spec.group}', so every permuted map "
+            "would equal the observed one. Use within_subject for an effect that varies "
+            "within subjects, or test an effect of the group column.")
+
+
+def check_effect(meta: pd.DataFrame, spec: LMMSpec) -> str:
+    """Refuse, from the metadata alone and before any fit, an effect the permutation cannot test
+    or the fixed part does not contain (``snpm_lmm_check_effect.m`` with the metadata).
+
+    Under group_label a token must be the group column or one of its coefficients
+    (``effectNotPermuted``; another column such as ``group_size`` is refused, a level not in the
+    data such as ``group_C`` falls to ``unknownEffect``). Names and reference levels come from
+    :func:`factor_coding`, as the fit uses them. The effect
+    must name a coefficient (continuous: exact name, else the first name containing it) or a term
+    (factor: same variables in any order) of the fixed part (``unknownEffect``). Returns the
+    effect as fitlme names it: for a factor ``POWER:group`` this is ``group:POWER``."""
+    coefs, terms = fixed_names(meta, spec)
+    if spec.perm == "group_label":
+        g = spec.group
+        cols = [str(c) for c in meta.columns]
+        code = (factor_coding(meta[g], g in _default_categorical(spec))
+                if g in meta.columns else None)
+        if code is not None and (g in _default_categorical(spec)
+                                 or isinstance(meta[g].dtype, pd.CategoricalDtype)):
+            grp_coef = {f"{g}_{lb}" for lb in code[1]}      # every category, reference too
+        else:
+            parts = {p for c in coefs for p in c.split(":")}
+            grp_coef = {p for p in parts if p.startswith(g + "_") and p not in cols}
+        _check_group_token(spec, grp_coef, cols)
+    if spec.effect_type == "factor":
+        want = sorted(v.strip() for v in spec.effect.split(":"))
+        for t in terms:
+            if sorted(t.split(":")) == want:
+                return t
+        raise _unknown_effect(spec, coefs, terms)
+    if spec.effect not in coefs and not any(spec.effect in c for c in coefs):
+        raise _unknown_effect(spec, coefs, terms)
+    return spec.effect
+
+
+def effect_within_share(meta: pd.DataFrame, effect: str, subject: str) -> float:
+    """Largest within-subject share of variation among the metadata variables of an effect
+    (``snpm_lmm_effect_within_share.m``), for ``effectConstantWithinSubject``.
+
+    The effect is split on ':' and '*'. NaN ("nothing to decide") when a token is POWER or no
+    token resolves to a column. A token resolves to the column of that name, else to the longest
+    column ``c`` with the token starting with ``c + '_'`` (``group_B`` -> ``group``). A numeric or
+    logical column is used directly; any other through one 0/1 indicator per level, taking the
+    largest share over the indicators."""
+    toks = [v.strip() for v in re.split(r"[:*]", str(effect))]
+    if "POWER" in toks:
+        return float("nan")
+    vn = [str(c) for c in meta.columns]
+    cols: list[str] = []
+    for t in toks:
+        if t in vn:
+            c = t
+        else:
+            cand = [c for c in vn if t.startswith(c + "_")]
+            if not cand:
+                continue
+            c = max(cand, key=len)      # MATLAB max(): the first of the longest
+        if c not in cols:
+            cols.append(c)
+    if not cols:
+        return float("nan")
+    subj = meta[subject]
+    ws = []
+    for c in cols:
+        x = meta[c]
+        if pd.api.types.is_numeric_dtype(x):
+            ws.append(float(within_ratio(x.to_numpy(dtype=float), subj)[0]))
+        else:
+            text = np.array(_ids(x), dtype=object)
+            D = np.column_stack([(text == lv).astype(float) for lv in sorted(set(text))])
+            ws.append(float(np.fmax.reduce(within_ratio(D, subj))))
+    return float(np.fmax.reduce(np.array(ws)))
+
+
 def _is_missing(col: pd.Series) -> np.ndarray:
-    """NaN, None, a missing category, or an empty / blank string."""
+    """NaN, None, a missing category, or an empty / blank string; and +-Inf in a numeric column
+    (``snpm_lmm_drop_missing_meta.m``: fitlme refuses an Inf row rather than deleting it, which
+    left every channel NaN, so an Inf is dropped like a NaN)."""
     miss = np.array(pd.isna(col), dtype=bool)   # a writable copy (pandas 3: copy-on-write)
-    if not pd.api.types.is_numeric_dtype(col):
+    if pd.api.types.is_numeric_dtype(col) and not pd.api.types.is_bool_dtype(col):
+        miss = miss | np.isinf(col.to_numpy(dtype=float, na_value=np.nan))
+    else:
         text = col.astype("string").str.strip()
         miss = miss | np.array((text == "").fillna(True), dtype=bool)
     return miss
@@ -364,8 +539,7 @@ class LMM:
         self.grouping = spec.grouping
         self.terms = _terms(spec.fixed, [c for c in self.meta.columns if c != "POWER"])
         self.vars = sorted({v for t in self.terms for v in t} - {"POWER"})
-        cats = set(spec.categorical) if spec.categorical is not None else {
-            spec.subject, spec.group, self.grouping}
+        cats = _default_categorical(spec)
         need = set(self.vars) | {self.grouping} | ({spec.dv} - {"POWER"})
         for c in sorted(need):
             if c not in self.meta.columns:
@@ -376,9 +550,10 @@ class LMM:
                     f"Model column '{c}' has a missing value in row(s) "
                     f"{', '.join(str(i + 1) for i in bad[:10])}{' ...' if bad.size > 10 else ''}; "
                     "drop those rows first (drop_missing_meta).")
-        self.categorical = {v for v in self.vars
-                            if v in cats or not pd.api.types.is_numeric_dtype(self.meta[v])}
-        self.levels = {v: _sorted_levels(self.meta[v]) for v in self.categorical}
+        # one coding per variable, fixed from the analysed rows (a permuted copy is coded alike)
+        self.coding = {v: c for v in self.vars
+                       if (c := factor_coding(self.meta[v], v in cats)) is not None}
+        self.categorical = set(self.coding)
         self.power_is_dv = spec.dv == "POWER"
         if self.power_is_dv and any("POWER" in t for t in self.terms):
             raise ValueError("POWER cannot be both the response and a fixed effect")
@@ -395,11 +570,11 @@ class LMM:
         """Columns and names of one variable: (n, k) for a factor (reference coded), (n, 1) else."""
         if v == "POWER":
             return [power], ["POWER"]
-        if v in self.categorical:
-            lev = self.levels[v]
+        if v in self.coding:
+            lev, lab = self.coding[v]
             col = meta[v].to_numpy()
             return ([(col == lv).astype(float) for lv in lev[1:]],
-                     [f"{v}_{lv}" for lv in lev[1:]])
+                     [f"{v}_{lb}" for lb in lab[1:]])
         return [meta[v].to_numpy(dtype=float)], [v]
 
     def _names(self):
@@ -410,8 +585,8 @@ class LMM:
             nm = [""]
             for v in t:
                 c, n = self._blocks(v, self.meta, dummy_power)
-                cols = [a * b for a in cols for b in c]
-                nm = [f"{a}:{b}" if a else b for a in nm for b in n]
+                cols = [a * b for b in c for a in cols]      # first variable fastest (fitlme)
+                nm = _cross(nm, n)
             term_cols.append(list(range(len(names), len(names) + len(nm))))
             names += nm
         return names, term_cols
@@ -419,18 +594,17 @@ class LMM:
     def _effect_cols(self) -> list[int]:
         e = self.spec.effect
         if self.spec.effect_type == "factor":
-            want = set(e.split(":"))
+            want = sorted(v.strip() for v in e.split(":"))
             for t, cols in zip(self.terms, self.term_cols):
-                if set(t) == want:
+                if sorted(t) == want:
                     return cols
-            raise ValueError(f"Effect '{e}' is not a term of the fixed part '{self.spec.fixed}'")
-        if e in self.names:
-            return [self.names.index(e)]
-        hit = [i for i, n in enumerate(self.names) if e in n]   # MATLAB: contains(names, effect)
-        if not hit:
-            raise ValueError(f"Effect '{e}' is not a coefficient of the fixed part "
-                             f"'{self.spec.fixed}' (coefficients: {', '.join(self.names)})")
-        return hit[:1]
+        else:
+            if e in self.names:
+                return [self.names.index(e)]
+            hit = [i for i, n in enumerate(self.names) if e in n]   # MATLAB: contains(names, e)
+            if hit:
+                return hit[:1]
+        raise _unknown_effect(self.spec, self.names, [":".join(t) for t in self.terms])
 
     def design(self, power: np.ndarray, meta: pd.DataFrame | None = None):
         """``(X, y)``: X is (channels, rows, p); y is (rows,) or (rows, channels)."""
@@ -444,7 +618,7 @@ class LMM:
             cols = [np.ones(n)]
             for v in t:
                 c, _ = self._blocks(v, meta, None)
-                cols = [a * b for a in cols for b in c]
+                cols = [a * b for b in c for a in cols]
             const.append(cols)
         X = np.empty((nch, n, len(self.names)))
         X[:, :, 0] = 1.0
@@ -455,7 +629,7 @@ class LMM:
                 cols = [np.ones(n)]
                 for v in rest:
                     c, _ = self._blocks(v, meta, None)
-                    cols = [a * b for a in cols for b in c]
+                    cols = [a * b for b in c for a in cols]
                 for k, c in zip(cols_idx, cols):
                     X[:, :, k] = (power * c[:, None]).T
             else:
@@ -926,6 +1100,7 @@ def lmm_tfce(power, meta: pd.DataFrame, spec: LMMSpec, graph: ChannelGraph,
              rng: np.random.Generator | None = None, perms=None) -> LMMTFCEResult:
     """Per-channel LMM statistic with TFCE family-wise correction (``snpm_lmm_TFCE.m``)."""
     check_design(spec, tail, list(meta.columns))
+    check_effect(meta, spec)
     power, ev, model, perms = _setup(power, meta, spec, graph, evaluable, n_perm, rng, perms)
     real = model.fit(power, evaluable=ev)
     maps = (model.fit(power, permute_meta(model.meta, spec, row), ev).stat for row in perms)
@@ -992,6 +1167,7 @@ def lmm_cluster(power, meta: pd.DataFrame, spec: LMMSpec, graph: ChannelGraph,
     p < alpha (two-sided for a continuous effect), mass = mean Wald (t^2 or F), null of the
     largest mass per permutation (0 when a permutation has no cluster)."""
     check_design(spec, "both", list(meta.columns))
+    check_effect(meta, spec)
     power, ev, model, perms = _setup(power, meta, spec, graph, evaluable, n_perm, rng, perms)
     real = model.fit(power, evaluable=ev)
 

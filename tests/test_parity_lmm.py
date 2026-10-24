@@ -270,8 +270,13 @@ def test_pipeline_reads_the_same_rows_channels_and_whole_head_test(case):
         assert np.array_equal(np.isnan(w_ch), np.isnan(ref))
         assert np.allclose(w_ch, ref, rtol=1e-9, atol=1e-15, equal_nan=True)
         const = np.asarray(L["const_within_subject"], bool).ravel()
-        assert np.array_equal(np.flatnonzero(const), pu.index0(L["excluded_index"]))
-        assert list(np.atleast_1d(L["excluded_reasons"])) == [lmm.CONST_RESPONSE] * 3
+        # MATLAB's exclusion list also holds other reasons (e.g. incomplete channels in
+        # lmm_missing); the constant-within-subject flags must match exactly the entries
+        # excluded for that reason
+        xi = pu.index0(np.atleast_1d(L["excluded_index"])) if np.size(L["excluded_index"]) else []
+        xr = [str(r) for r in np.atleast_1d(L["excluded_reasons"])] if len(xi) else []
+        const_x = [int(i) for i, r in zip(xi, xr) if r in (lmm.CONST_RESPONSE, lmm.CONST_PREDICTOR)]
+        assert np.flatnonzero(const).tolist() == const_x
     gstat, gp = lmm_pipeline.global_test(meta, power, spec, ev)
     assert gstat == pytest.approx(float(L["global_stat"]), rel=1e-6)
     assert gp == pytest.approx(float(L["global_p"]), rel=1e-5)

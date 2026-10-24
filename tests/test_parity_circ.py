@@ -14,7 +14,7 @@ import pytest
 
 import parity_util as pu
 from hdeeg_snpm import circ
-from hdeeg_snpm.circ_pipeline import EXCLUSION_REASON, effect_label, run_circ
+from hdeeg_snpm.circ_pipeline import effect_label, exclusion_reason, run_circ
 
 pytestmark = pytest.mark.parity
 
@@ -110,7 +110,7 @@ def test_inputs_and_channel_set(case):
     excl = res["excluded_channels"]
     assert pr.excluded.tolist() == (pu.index0(excl["index"]).tolist()
                                     if np.size(excl["index"]) else [])
-    assert excl["reason"] == EXCLUSION_REASON
+    assert excl["reason"] == exclusion_reason(pr.comparison)
     expected = [_text(r) for r in np.atleast_1d(c["excluded_reason"])]
     assert [expected[i] for i in pr.excluded] == pr.excluded_reasons
     assert all(expected[i] == "" for i in np.flatnonzero(pr.evaluable))

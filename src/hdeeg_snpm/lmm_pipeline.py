@@ -14,6 +14,7 @@ Parameter keys are MATLAB's: ``data_file`` (or ``data1_file``), ``data_sheet``, 
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 from dataclasses import dataclass, field
 
@@ -108,17 +109,49 @@ def prepare(params: dict):
     meta, power, dropped = lmm.drop_missing_meta(meta, spec, power)
     notes: list[str] = list(dropped.notes)
     # within_subject shuffles the DV inside each subject: a DV constant within every subject
-    # leaves nothing to permute. Labelling-independent, so decided once, here.
-    if spec.perm == "within_subject":
+    # leaves nothing to permute. Under group_label a metadata DV constant within every subject
+    # makes every fit a perfect fit (the backstop would blank the whole map): a subject-level
+    # analysis. Labelling-independent, so decided once, here.
+    if spec.dv != "POWER" and spec.dv in meta.columns:
         w_dv = float(lmm.within_ratio(meta[spec.dv].to_numpy(dtype=float),
                                       meta[spec.subject])[0])
-        if w_dv <= lmm.WITHIN_MIN:
+        if w_dv <= lmm.WITHIN_MIN and spec.perm == "within_subject":
             raise lmm.LMMInputError(
                 "dvConstantWithinSubject",
                 f"The within_subject scheme shuffles '{spec.dv}' within each subject, but it is "
                 f"constant within each subject (within-subject share of its variation "
                 f"{_g3(w_dv)}, threshold 1e-06), so the within-subject shuffle has nothing to "
                 "permute. Use group_label for a between-group effect, or analyse subject means.")
+        if w_dv <= lmm.WITHIN_MIN:
+            raise lmm.LMMInputError(
+                "dvConstantWithinSubject",
+                f"The response '{spec.dv}' is constant within each subject (within-subject share "
+                f"of its variation {_g3(w_dv)}, threshold 1e-06), so every mixed-model fit is a "
+                "perfect fit and no statistic is defined. Analyse subject means with "
+                "anova1/unpairedT.")
+    # The effect must be testable (group_label: an actual level of the group column) and must
+    # name a coefficient/term of the fixed part, decided from the metadata before any fit. A
+    # factor term written in another variable order ('POWER:group') becomes fitlme's name
+    # ('group:POWER').
+    effect_as_given = spec.effect
+    canonical = lmm.check_effect(meta, spec)
+    if canonical != spec.effect:
+        spec = dataclasses.replace(spec, effect=canonical)
+    # within_subject leaves every subject's mean of the DV in place, so an effect whose variables
+    # are all constant within each subject (group, group_B, a subject-level covariate) has no
+    # null under the shuffle. An effect with POWER, or with a variable that varies within
+    # subject (group:time), runs.
+    if spec.perm == "within_subject":
+        w_eff = lmm.effect_within_share(meta, effect_as_given, spec.subject)
+        if w_eff <= lmm.WITHIN_MIN:
+            raise lmm.LMMInputError(
+                "effectConstantWithinSubject",
+                f"The within_subject scheme shuffles '{spec.dv}' within each subject, but the "
+                f"effect '{effect_as_given}' is constant within each subject (largest "
+                f"within-subject share of variation among its variables {_g3(w_eff)}, threshold "
+                "1e-06), so the shuffle leaves the effect in place and gives no null for it. Use "
+                "group_label for a between-group effect, or test an effect that varies within "
+                "subjects.")
     power = _transform(power, params.get("datatype", "absolute"))
     setup = setup_channels(params.get("channels", "egi"), [power], channel_cols)
     power = np.array(setup.data[0], dtype=float)
@@ -152,12 +185,25 @@ def prepare(params: dict):
     w_ch[evaluable] = lmm.within_ratio(power[:, evaluable], meta[spec.subject])
     with np.errstate(invalid="ignore"):
         const = evaluable & (w_ch <= lmm.WITHIN_MIN)
-    why = (lmm.CONST_RESPONSE if spec.dv == "POWER" else
-           lmm.CONST_PREDICTOR if spec.perm == "within_subject" else None)
-    if why is not None and const.any():
+    if spec.dv == "POWER" or spec.perm == "within_subject":
+        why = lmm.CONST_RESPONSE if spec.dv == "POWER" else lmm.CONST_PREDICTOR
         for i in np.flatnonzero(const):
             reasons.setdefault(int(i), why)
         evaluable = evaluable & ~const
+    else:
+        # group_label, metadata response, POWER a predictor: relabelling whole subjects moves
+        # response and POWER together, so a POWER constant within subject is a subject-level
+        # covariate and the channel is kept. A channel with one value on every trial (total SS
+        # <= 1e-20 x uncentred SS) is collinear with the intercept at every labelling: excluded
+        # once. (MATLAB also excludes subject-constant channels under a random POWER slope by
+        # subject; this package fits (1|Subject) only, so that case cannot arise.)
+        V = power[:, evaluable]
+        flat = np.zeros(evaluable.size, bool)
+        flat[evaluable] = (((V - V.mean(axis=0)) ** 2).sum(axis=0)
+                           <= lmm.ZERO_SS_RTOL * (V ** 2).sum(axis=0))
+        for i in np.flatnonzero(flat):
+            reasons.setdefault(int(i), lmm.FLAT)
+        evaluable = evaluable & ~flat
     if not evaluable.any():
         distinct = list(dict.fromkeys(reasons[i] for i in sorted(reasons)))
         raise lmm.LMMInputError(

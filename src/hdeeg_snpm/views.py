@@ -166,7 +166,7 @@ def _plain(v):
 
 def _circ_view(res) -> EffectView:
     from .circ import mean_direction_deg
-    from .circ_pipeline import CLUSTER_STATISTIC, EXCLUSION_REASON, STAT_LABELS, effect_label
+    from .circ_pipeline import CLUSTER_STATISTIC, STAT_LABELS, effect_label, exclusion_reason
 
     prep, r, labels = res.prepared, res.result, res.setup.labels
     name = "U2" if prep.comparison == "circ_phase_group_u2" else "F"
@@ -194,7 +194,7 @@ def _circ_view(res) -> EffectView:
         "statistic_label": STAT_LABELS[prep.comparison], "effect_label": effect_label(prep),
         "import": imp, "rotation_deg": imp["rotation_deg"], "convention": imp["convention"],
         "units": imp["units"], "covariate": cov, "gate_min_per_group": 8,
-        "cluster_statistic": CLUSTER_STATISTIC, "exclusion_reason": EXCLUSION_REASON,
+        "cluster_statistic": CLUSTER_STATISTIC, "exclusion_reason": exclusion_reason(prep.comparison),
         "n_group1": prep.n1g, "n_group2": prep.n2g, "measure_col": prep.measure_col,
         **({} if prep.is_group else {"measure_nan_removed": prep.measure_nan_removed,
                                      "dropped_subjects": list(prep.dropped_subjects)}),

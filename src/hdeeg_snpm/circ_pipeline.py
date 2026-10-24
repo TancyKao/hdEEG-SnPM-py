@@ -55,10 +55,19 @@ STATISTICS = {"circ_phase_group": "hotelling_F", "circ_phase_group_u2": "watson_
 # results_struct.excluded_channels.reason, one string for every excluded channel
 EXCLUSION_REASON = ("not estimable: fewer than 8 subjects per group, incomplete column under a "
                     "per-channel covariate, or log(count) collinear with group")
+# circ_corrAngLinear is paired by subject (no groups, no count covariate): its only route
+EXCLUSION_REASON_CLR = ("not estimable: fewer than 8 subjects with both an angle and a measure "
+                        "value")
 # per-channel reasons, one per exclusion route (the export script's words)
-REASON_BELOW = "fewer than 8 subjects per group"   # also circ_corrAngLinear, as MATLAB words it
+REASON_BELOW = "fewer than 8 subjects per group"
+REASON_BELOW_CLR = "fewer than 8 subjects with both an angle and a measure value"
 REASON_COLLINEAR = "log(count) collinear with group"
 REASON_INCOMPLETE = "incomplete column under the per-channel covariate"
+
+def exclusion_reason(comparison: str) -> str:
+    """MATLAB's one combined reason for every excluded channel (``core_snpm_circ.m``)."""
+    return EXCLUSION_REASON_CLR if comparison == "circ_corrAngLinear" else EXCLUSION_REASON
+
 
 CLUSTER_NOTE = ("Cluster statistic: MASS (sum of the statistic / n channels). This differs from "
                 "the FieldTrip maxsize used by Helfrich et al.")
@@ -398,7 +407,8 @@ def prepare_circ(params: dict) -> CircPrepared:
             raise CircGateDrift("The excluded channels are not explained by the three exclusion "
                                 "routes; the gate is inconsistent.")
         excluded = np.flatnonzero(~evaluable)
-        reasons = ["; ".join(r for r, hit in ((REASON_BELOW, below[k]),
+        r_below = REASON_BELOW if is_grp else REASON_BELOW_CLR
+        reasons = ["; ".join(r for r, hit in ((r_below, below[k]),
                                               (REASON_COLLINEAR, collinear[k]),
                                               (REASON_INCOMPLETE, incomplete[k])) if hit)
                    for k in excluded]

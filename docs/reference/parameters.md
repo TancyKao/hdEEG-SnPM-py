@@ -19,8 +19,8 @@ The same keys are used in a TOML file for `snpm run` and in the dictionary passe
 | `meta_cols` | list of column names | required for group designs | columns that are not channels |
 | `group_col`, `condition_col`, `subject_col`, `predictor_col`, `covariate_cols` | column names | | roles of the design columns |
 | `lmm_meta_cols` | list of column names | required for `mixedmodel` | columns of the long-format file that are not channels |
-| `lmm_dv`, `lmm_fixed`, `lmm_random`, `lmm_effect`, `lmm_effect_type` | see the how-to | required for `mixedmodel` | response, fixed part, random part (`(1\|<column>)` only), effect tested, `continuous` or `factor` |
-| `lmm_perm` | `within_subject`, `group_label` | from `lmm_effect_type` | permutation scheme of `mixedmodel` |
+| `lmm_dv`, `lmm_fixed`, `lmm_random`, `lmm_effect`, `lmm_effect_type` | see the how-to | required for `mixedmodel` | response, fixed part, random part (`(1\|<column>)` only), effect tested (a coefficient of `lmm_fixed` for `continuous`, a term for `factor`, else `unknownEffect`), `continuous` or `factor` |
+| `lmm_perm` | `within_subject`, `group_label` | from `lmm_effect_type` | permutation scheme of `mixedmodel`. `group_label` needs an effect containing the group column or one of its coefficients such as `group_B` (`effectNotPermuted`); `within_subject` refuses an effect whose variables are all constant within each subject (`effectConstantWithinSubject`); either refuses a metadata response constant within each subject (`dvConstantWithinSubject`). Details in [Run a mixed model](../how-to/run-a-mixed-model.md#what-is-refused) |
 | `lmm_subject`, `lmm_group` | column names | `Subject`, `group` | subject column, and the group column relabelled by `group_label` |
 | `circ_units` | `rad`, `deg` | required for circular analyses, no default | units of the angle files |
 | `circ_convention` | `literature_uppeak0`, `yasa_uppeak0`, `luna_zerocross0`, `turtlewave_pre_v4`, `custom` | required for circular analyses, no default | where the exported angle puts zero |
