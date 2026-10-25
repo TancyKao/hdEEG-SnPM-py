@@ -37,7 +37,15 @@
 {% if effects|length > 1 %}<p>Each effect below is corrected across channels. The effects are not corrected across each other, and neither are the post-hoc contrasts or the condition effects within each group.</p>{% endif %}
 {% for n in notes %}<div class="banner">{{ n }}</div>{% endfor %}
 </section>
-
+{% if source %}
+<section>
+<h2>Source</h2>
+<p>The data files were built from TurtleWave databases in this run.</p>
+<table>
+{% for k, v in source %}<tr><th>{{ k }}</th><td>{{ v }}</td></tr>
+{% endfor %}</table>
+</section>
+{% endif %}
 {% for e in effects %}
 <section id="fx-{{ e.key }}">
 <h2>{{ e.title }}</h2>

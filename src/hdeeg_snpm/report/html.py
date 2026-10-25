@@ -91,7 +91,34 @@ def _p_text(comparison: str) -> str:
             "maximum reaches the observed value.")
 
 
-def render(views, setup, params, alpha, seed, notes=(), title=None) -> str:
+def _source_rows(source) -> list[tuple[str, str]]:
+    """The "Source" card of a run built from TurtleWave databases, as (label, text) rows."""
+    if not source:
+        return []
+    stage = source.get("stage")
+    rows = [("Folder", source["folder"]),
+            ("Databases", f"{source['n_databases']} analysed of {source['n_databases_found']} found"),
+            ("Event type", source["event_type"]),
+            ("Method", source.get("method") or "not specified"),
+            ("Stages", "+".join(stage) if isinstance(stage, list) else stage or "not specified"),
+            ("Band", source.get("band") or "not specified"), ("Measure", source["measure"])]
+    if "density_divided_by" in source:
+        rows.append(("Density divided by the analysed time of",
+                     ", ".join(source["density_divided_by"])))
+        rows.append(("TurtleWave version", source.get("turtlewave_version") or "unknown"))
+    interp = source.get("interpolated_channels") or {}
+    rows.append(("Interpolated channels set to missing",
+                 "; ".join(f"{who}: {' '.join(ch)}" for who, ch in interp.items()) or "none"))
+    dropped = source.get("dropped_subjects") or []
+    rows.append(("Subjects left out",
+                 "; ".join(f"{d['subject']} ({d['reason']})" for d in dropped) or "none"))
+    if source.get("subjects_file"):
+        rows.append(("Subjects file", source["subjects_file"]))
+    rows.append(("Tables written to", f"{source['tables']} (with recordings.csv)"))
+    return rows
+
+
+def render(views, setup, params, alpha, seed, notes=(), title=None, source=None) -> str:
     env = Environment(loader=PackageLoader("hdeeg_snpm.report", "templates"),
                       autoescape=select_autoescape(["html", "j2"]))
     n_perm = sorted({v.n_permutations for v in views})
@@ -105,6 +132,7 @@ def render(views, setup, params, alpha, seed, notes=(), title=None) -> str:
         created=datetime.now().strftime("%Y-%m-%d %H:%M"), montage=setup.system_key,
         n_channels=len(setup.labels), methods=_methods(views[0]),
         settings=[(k, params[k]) for k in shown if params.get(k) not in (None, "", [])],
+        source=_source_rows(source),
         tail_note=("Left tail: the statistic shown is Data 2 minus Data 1, so the tested "
                    "direction (Data 1 below Data 2) appears as positive values."
                    if params.get("tail") == "left" else ""),

@@ -19,6 +19,79 @@ This writes `eventStat_<measure>_spindle.csv` for each measure and `recordings.c
 **Open `recordings.csv` and check it**: it lists, for every database, the subject and session
 it was assigned and where that came from.
 
+## Run an analysis straight from the databases
+
+Instead of writing the tables first, put a `[turtlewave]` section in the configuration file
+of `snpm run`. One command then reads the databases, builds the table of one measure, and runs
+the analysis on it:
+
+```toml
+comparison   = "unpairedT"
+group_col    = "group"
+groups       = ["A", "B"]          # Data 1 is group A, Data 2 is group B
+permutations = 5000
+output_path  = "results"
+
+[turtlewave]
+folder        = "/data/study"      # searched for neural_events.db
+subjects_file = "subjects.csv"     # Subject plus groups, covariates or scores
+event_type    = "spindle"
+method        = "Moelle2011"
+stage         = ["NREM2", "NREM3"]
+freq_lower    = 12
+freq_upper    = 15
+measure       = "density"          # density, amplitude, duration or count
+subject_from  = "auto"
+```
+
+    snpm run study.toml
+
+Relative paths in `folder` and `subjects_file` are taken from the configuration file's folder.
+The section cannot be combined with `data_file`, `data1_file` or `data2_file`, and it fills
+`meta_cols` itself. Every table it builds is kept, together with `recordings.csv`, in a
+folder named like the run's results with `_tables` added
+(`<output_path>/eventStat_<measure>_<event type>_<comparison>_<date>_<time>_tables/`), so each
+run keeps its own tables and can be checked and repeated by hand. The summary file and the
+report get a "Source" record: the folder, the number of databases analysed and found, the event
+type, the method and band of the detection runs selected, the stages and measure, the stages
+density was divided by and the TurtleWave version that computed it, the interpolated channels
+set to missing in the analysed recordings, and any subject left out.
+
+How the table reaches each analysis:
+
+- `onesampleT`: the table is Data 1.
+- `pairedT`: `sessions = ["ses-1", "ses-2"]` names the two sessions, which become Data 1 and
+  Data 2, matched by subject. A subject with only one of the two sessions is left out, with a
+  warning, and listed in the report.
+- `unpairedT`: `subjects_file` is joined and the table is split by the values of `group_col`
+  (default `group`) listed in `groups`. Subjects in any other group are left out and listed.
+- `anova1`, `ancova`, `regression`: `subjects_file` is joined and its columns, with `Subject`
+  and `session`, become the metadata columns, so `group_col`, `predictor_col` and
+  `covariate_cols` name columns of `subjects_file`. These designs take one recording per subject.
+- `rmanova`, `mixed2way`: the session is the condition (`condition_col` defaults to `session`,
+  `subject_col` to `Subject`); `mixed2way` takes its groups from `subjects_file`.
+- `correlationP`, `correlationS`: the table is Data 1 and the column of `subjects_file` named by
+  `behavior_col` is Data 2 (when the file has a single score column it is used without naming).
+  Covariates of a correlation still come from `covariate_file` with `use_covariates = true`,
+  not from `subjects_file`; `use_covariates` without `covariate_file` is refused.
+- `mixedmodel` and the circular analyses are refused: they need trial-level rows or phase
+  angles, not one value per channel and recording.
+
+The analyses that take one recording per subject (`onesampleT`, `unpairedT`, the correlations,
+`anova1`, `ancova`, `regression`) are refused when the databases come from more than one
+session, even if every subject has a single database: with group A recorded at one session and
+group B at another, session would be mixed into the group comparison. Name the session to keep,
+for example `sessions = ["ses-2"]`. Subjects are matched between the databases and
+`subjects_file` as text, ignoring a leading `sub-` and letter case; numbers are not padded, so
+a database `01` matches a `subjects_file` row `01` but not `1` (the subject column of
+`subjects_file` is read as text, so `01` stays `01`). Databases whose subject IDs read as the same
+number, such as `01` and `1` or `007` and `7`, are refused as ambiguous; rename the folders. A subject that has a
+database but no row in `subjects_file`, or a row but no database, stops the run with both lists;
+nobody is dropped silently.
+
+`examples/turtlewave_unpaired.toml` runs on synthetic databases built by
+`python examples/make_turtlewave_example.py`.
+
 ## Which subject a database belongs to
 
 Newer databases store the subject ID; older ones do not. For those the subject is the subject
@@ -38,7 +111,7 @@ Two databases resolving to the same subject and session are refused.
 
 Each recording is one row, with a `session` column. To compare sessions within subjects, split
 the table by session into two files for `pairedT`, or keep it as one file and use `rmanova`
-with `condition_col = "session"`.
+with `condition_col = "session"`. A `[turtlewave]` section does either for you (above).
 
 ## Measures
 

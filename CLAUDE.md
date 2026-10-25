@@ -49,7 +49,8 @@ nothing may be excluded silently.
   statistic to a fit with no residual variation or a moment subject/residual SD ratio >= 1e3).
 - `missing.py`: which channels can be tested. `pipeline.py`: files to results.
 - `views.py`, `output.py`, `report/`: one description of an effect, then the writers.
-- `io/tables.py`, `io/turtlewave.py`: inputs. `cli.py`: `snpm run config.toml`.
+- `io/tables.py`, `io/turtlewave.py`: inputs. `io/turtlewave_config.py`: the `[turtlewave]`
+  section of a run config (databases to the analysis files). `cli.py`: `snpm run config.toml`.
 
 ## Fixtures
 

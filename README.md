@@ -9,7 +9,7 @@ The MATLAB toolbox is the reference: an analysis here counts as validated only o
 the MATLAB statistic maps and corrected p-values on shared inputs using the same permutation
 indices.
 
-**Status: v0.4.0, beta. It reproduces the MATLAB toolbox on the parity fixtures (phases 1 to 3); the MATLAB toolbox stays the reference. Changes: [CHANGELOG.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/CHANGELOG.md).**
+**Status: v0.5.0, beta. It reproduces the MATLAB toolbox on the parity fixtures (phases 1 to 3); the MATLAB toolbox stays the reference. Changes: [CHANGELOG.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/CHANGELOG.md).**
 
 | Piece | State |
 |---|---|
@@ -37,6 +37,8 @@ All documentation: [docs/README.md](https://github.com/TancyKao/hdEEG-SnPM-py/bl
 
 writes a results file, a summary, an Excel workbook and a self-contained HTML report. The example
 files are in this repository, under `examples/`.
+A `[turtlewave]` section in the configuration file runs an analysis straight from a folder of
+TurtleWave `neural_events.db` files ([how](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/docs/how-to/read-turtlewave-databases.md#run-an-analysis-straight-from-the-databases)).
 
 ## Install (development)
 

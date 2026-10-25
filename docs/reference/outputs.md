@@ -1,6 +1,9 @@
 # Output files
 
-Every run writes four files named `<data file>_<comparison>_<date>_<time>`.
+Every run writes four files named `<data file>_<comparison>_<date>_<time>`. A run with a
+`[turtlewave]` section is named `eventStat_<measure>_<event type>_<comparison>_<date>_<time>`
+and also keeps the tables it built, with `recordings.csv`, in a folder of the same name
+ending in `_tables`, so later runs into the same `output_path` do not overwrite them.
 
 ## `.json`: what was run and what was found
 
@@ -14,7 +17,13 @@ check, group sizes, subjects analysed and dropped, the permutation type and the 
 panel. The mixed model adds a `mixed_model` block: formula, random structure, effect and
 effect type, permutation scheme, coefficient names, trials and subjects analysed, residual
 degrees of freedom, the rows dropped for a missing model variable, and the number of
-permutations that gave no finite statistic.
+permutations that gave no finite statistic. A run with a `[turtlewave]` section adds a
+`source` block (folder, number of databases analysed and found, event type, method and band
+of the selected detection runs, stage, measure, interpolated channels set to missing in the
+analysed recordings, subjects left out, `sessions`/`groups`/`behavior_col` when given, the
+tables folder and, for density, the stages it was divided by and the TurtleWave version); the
+HTML report shows it as a
+"Source" card. Other runs have neither.
 
 ## `.npz`: the maps
 

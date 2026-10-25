@@ -17,6 +17,7 @@ import pytest
 
 import parity_util as pu
 from hdeeg_snpm import lmm, lmm_pipeline
+from hdeeg_snpm.io import tables
 
 pytestmark = pytest.mark.parity
 
@@ -312,8 +313,8 @@ def test_backstop_keep_drop_decisions_match_matlab():
                       pu.FIXTURES / "lmm_backstop_sweep_expected.csv")
     if not data.exists():
         pytest.skip(f"{data} is absent (built by scripts/export_lmm_backstop_sweep.m)")
-    d = pd.read_csv(data, float_precision="round_trip")
-    e = pd.read_csv(expected, float_precision="round_trip")
+    d = tables.read_csv(data)
+    e = tables.read_csv(expected)
     model = lmm.LMM(d.assign(POWER=0.0), lmm.LMMSpec(dv="POWER", fixed="group", effect="group",
                                                       effect_type="factor"))
     cols = list(e["column"])

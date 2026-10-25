@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0 (2026-10-25)
+
+Added:
+- A `[turtlewave]` section in the `snpm run` configuration file: one command reads a folder of
+  TurtleWave `neural_events.db` files, builds the table of one measure, splits or joins it for
+  the analysis (`sessions`, `groups`, `subjects_file`, `behavior_col`) and runs it. The tables
+  and `recordings.csv` are kept in a `_tables` folder named after the run; the summary file and
+  the report record the source. Subjects on only one side of the join are refused (IDs compared
+  as text, ignoring a leading `sub-` and case); subjects left out of a paired or two-group
+  comparison are listed; recordings from several sessions are not pooled into a one-recording
+  analysis unless `sessions` names one. `mixedmodel` and the circular analyses are refused.
+  Example: `examples/turtlewave_unpaired.toml`.
+
+Changed:
+- CSV files are read without the `float_precision` argument under pandas 3, whose default
+  parser is already exact; numbers are unchanged.
+
 ## 0.4.0 (2026-10-24)
 
 First public release, and the first on PyPI.

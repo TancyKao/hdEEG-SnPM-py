@@ -15,6 +15,14 @@ import pandas as pd
 from ..montage import all_labels
 
 _EGI_NAME = re.compile(r"^E\d+$")
+# pandas 3 parses every float exactly (to the nearest double) by default and deprecates
+# float_precision; before 3 the default parser can be one unit in the last place off.
+_EXACT = {} if int(pd.__version__.split(".")[0]) >= 3 else {"float_precision": "round_trip"}
+
+
+def read_csv(path, **kwargs) -> pd.DataFrame:
+    """``pandas.read_csv`` with every number parsed to the nearest double, as MATLAB reads it."""
+    return pd.read_csv(path, **_EXACT, **kwargs)
 
 
 def read_table(path, sheet=None) -> pd.DataFrame:
@@ -22,7 +30,7 @@ def read_table(path, sheet=None) -> pd.DataFrame:
     CSV). Numbers are parsed so that the value equals the text exactly as MATLAB reads it."""
     path = Path(path)
     if sheet in (None, "", "CSV File") and path.suffix.lower() not in (".xlsx", ".xls", ".xlsm"):
-        return pd.read_csv(path, float_precision="round_trip")
+        return read_csv(path)
     return pd.read_excel(path, sheet_name=0 if sheet in (None, "", "CSV File") else sheet)
 
 

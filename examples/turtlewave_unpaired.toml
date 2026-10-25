@@ -1,0 +1,25 @@
+# Group A versus group B, straight from TurtleWave databases. Build the synthetic databases
+# first:  python examples/make_turtlewave_example.py
+# The [turtlewave] section reads every neural_events.db under `folder`, builds the spindle
+# amplitude table, joins subjects.csv and splits it into groups A and B. The tables it builds
+# and recordings.csv are kept beside the results, in a folder ending in _tables.
+comparison   = "unpairedT"
+tail         = "both"
+channels     = "egi"
+datatype     = "absolute"
+group_col    = "group"
+groups       = ["A", "B"]
+permutations = 1000
+seed         = 20261025
+output_path  = "../example_output"
+
+[turtlewave]
+folder        = "../example_output/turtlewave_study/databases"
+subjects_file = "../example_output/turtlewave_study/subjects.csv"
+event_type    = "spindle"
+method        = "Moelle2011"
+stage         = ["NREM2", "NREM3"]
+freq_lower    = 12
+freq_upper    = 15
+measure       = "amplitude"     # density, amplitude, duration or count; density needs TurtleWave
+subject_from  = "auto"

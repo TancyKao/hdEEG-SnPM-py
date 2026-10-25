@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from hdeeg_snpm.io import tables
 from hdeeg_snpm.io import turtlewave as tw
 
 
@@ -277,8 +278,8 @@ def test_tables_equal_the_matlab_bridge_script(tmp_path):
     for etype, lo, hi, label in (("spindle", 12, 15, "spindle_12-15"),
                                  ("slow_wave", 0.5, 1.25, "sw_0.5-1.25")):
         def bridge(measure, label=label):
-            t = pd.read_csv(tmp_path / "out" / f"eventStat_{measure}_{label}.csv",
-                            dtype={"Subject": str}, float_precision="round_trip")
+            t = tables.read_csv(tmp_path / "out" / f"eventStat_{measure}_{label}.csv",
+                                dtype={"Subject": str})
             return t.set_index("Subject").dropna(axis=1, how="all")
         for measure in ("amplitude", "duration"):
             ours, _ = tw.event_table(recs, measure, etype, stage=["NREM2", "NREM3"],
@@ -322,8 +323,8 @@ def test_density_equals_the_matlab_bridge_script_with_analysed_time(tmp_path):
     recs = tw.find_recordings(tmp_path / "in")
     for etype, lo, hi, label in (("spindle", 12, 15, "spindle_12-15"),
                                  ("slow_wave", 0.5, 1.25, "sw_0.5-1.25")):
-        bridge = pd.read_csv(tmp_path / "out" / f"eventStat_density_{label}.csv",
-                             dtype={"Subject": str}, float_precision="round_trip")
+        bridge = tables.read_csv(tmp_path / "out" / f"eventStat_density_{label}.csv",
+                                 dtype={"Subject": str})
         bridge = bridge.set_index("Subject").dropna(axis=1, how="all")
         ours, _ = tw.event_table(recs, "density", etype, stage=["NREM2", "NREM3"],
                                  freq_lower=lo, freq_upper=hi)

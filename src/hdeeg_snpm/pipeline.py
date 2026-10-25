@@ -587,6 +587,12 @@ def run(params: dict, rng: np.random.Generator | None = None):
     if n_perm is not None and (int(n_perm) != n_perm or n_perm < 20):
         raise ValueError(f"permutations must be a whole number of at least 20, got {n_perm!r}; "
                          "with fewer, no p-value can reach 0.05.")
+    from .io.turtlewave_config import ROUTING
+    stray = [k for k in ("turtlewave", *ROUTING) if k in params]
+    if stray:
+        raise ValueError(f"{', '.join(stray)} belong(s) to a [turtlewave] section, which "
+                         "output.run_and_write (snpm run) reads; without the section remove "
+                         "them.")
     comparison = params["comparison"]
     if comparison in circ_pipeline.RETIRED:
         raise ValueError(circ_pipeline.retired_message(comparison))
