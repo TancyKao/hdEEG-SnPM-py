@@ -29,10 +29,12 @@ Changelog = "https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 turtlewave = ["turtlewave-hdeeg>=4.6"]
+gui = ["PyQt5>=5.15"]
 dev = ["pytest>=7", "ruff>=0.4", "mne>=1.0", "statsmodels>=0.14"]
 
 [project.scripts]
 snpm = "hdeeg_snpm.cli:main"
+snpm-gui = "hdeeg_snpm.gui:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "hdeeg_snpm.__version__" }

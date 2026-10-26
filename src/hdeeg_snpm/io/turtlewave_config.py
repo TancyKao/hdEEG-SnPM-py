@@ -56,8 +56,11 @@ def _channels_only(table: pd.DataFrame) -> pd.DataFrame:
     return table.drop(columns="session")
 
 
-def _subjects(path, table, keys):
-    """The subjects file indexed by subject key, refusing any subject on one side only."""
+def read_subjects(path, as_text: bool = False) -> tuple[pd.DataFrame, str]:
+    """A subjects file and the name of its subject column. The subject column is read as text,
+    so 01 stays 01 and matches a database named 01; with ``as_text`` every column is (an empty
+    cell is missing), which is how group labels are compared. The window reads the file with
+    this function too, so the groups it offers are the ones compared here."""
     path = Path(path)
     excel = path.suffix.lower() in (".xlsx", ".xls", ".xlsm")
     head = pd.read_excel(path, nrows=0) if excel else pd.read_csv(path, nrows=0)
@@ -65,9 +68,21 @@ def _subjects(path, table, keys):
     if col is None:
         raise ValueError(f"{path} has no subject column (a column whose name contains "
                          "'subject').")
-    # The subject column is read as text, so 01 stays 01 and matches a database named 01.
-    info = (pd.read_excel(path, dtype={col: str}) if excel
-            else tables.read_csv(path, dtype={col: str}))
+    if not as_text:
+        info = (pd.read_excel(path, dtype={col: str}) if excel
+                else tables.read_csv(path, dtype={col: str}))
+        return info, col
+    # Only an empty (or blank) cell is missing: a group called NA or None is a label.
+    info = (pd.read_excel(path, dtype=str, keep_default_na=False) if excel
+            else tables.read_csv(path, dtype=str, keep_default_na=False))
+    return info.apply(lambda c: c.where(c.str.strip() != "")), col
+
+
+def _subjects(path, table, keys):
+    """The subjects file indexed by subject key, refusing any subject on one side only; and the
+    same file read as text, for comparing group labels."""
+    info, col = read_subjects(path)
+    text = read_subjects(path, as_text=True)[0]
     skeys = _keys(info[col], str(path))
     if len(set(skeys)) < len(skeys):
         dup = sorted({k for k in skeys if skeys.count(k) > 1})
@@ -86,7 +101,7 @@ def _subjects(path, table, keys):
     if clash:
         raise ValueError(f"{path} has column(s) that the event table already has: "
                          f"{', '.join(map(str, clash))}.")
-    return info
+    return info, text.assign(_key=skeys).set_index("_key").drop(columns=col)
 
 
 def _one_row_per_subject(table, keys, comparison):
@@ -191,9 +206,9 @@ def prepare(params: dict, out: Path):
         raise ValueError(f"Subject IDs that read as the same number are ambiguous: "
                          f"{', '.join(groups)}. Rename the subject folders so each subject has "
                          "one spelling.")
-    info = None
+    info = info_text = None
     if cfg.get("subjects_file"):
-        info = _subjects(cfg["subjects_file"], table, keys)
+        info, info_text = _subjects(cfg["subjects_file"], table, keys)
     elif comparison in ("unpairedT", "correlationP", "correlationS", "anova1", "ancova",
                         "regression", "mixed2way"):
         raise ValueError(f"{comparison} from a [turtlewave] section needs subjects_file (the "
@@ -243,21 +258,28 @@ def prepare(params: dict, out: Path):
         if group_col not in info.columns:
             raise ValueError(f"group_col '{group_col}' is not a column of "
                              f"{Path(cfg['subjects_file']).name}.")
-        values = info.loc[keys, group_col].astype(str).to_numpy()
+        # Group labels are compared as text, as written in the file: 01 stays 01, an empty
+        # cell is no group.
+        values = info_text.loc[keys, group_col].fillna("").astype(str).to_numpy()
+        held = ", ".join(sorted(set(values) - {""})) or "no values"
         if groups is None or len(groups) != 2:
             raise ValueError(f"unpairedT from a [turtlewave] section needs groups = [\"<first>\", "
-                             f"\"<second>\"]; '{group_col}' holds {', '.join(sorted(set(values)))}.")
+                             f"\"<second>\"]; '{group_col}' holds {held}.")
         groups = [str(g) for g in groups]
+        if any(not g.strip() for g in groups):
+            raise ValueError("groups names an empty group; name two labels of "
+                             f"'{group_col}' ({held}).")
         absent = [g for g in groups if g not in set(values)]
         if absent:
             raise ValueError(f"Group(s) {', '.join(absent)} do not occur in '{group_col}' "
-                             f"({', '.join(sorted(set(values)))}).")
+                             f"({held}).")
         other = [(str(s), v) for s, v in zip(table["Subject"], values) if v not in groups]
         if other:
-            dropped += [{"subject": s, "reason": f"{group_col} = {v}, not compared"}
-                        for s, v in other]
+            dropped += [{"subject": s, "reason": f"{group_col} = {v}, not compared" if v
+                         else f"{group_col} is empty"} for s, v in other]
             msg = (f"{len(other)} subject(s) are in neither group {groups[0]} nor {groups[1]} "
-                   f"and are left out: " + ", ".join(f"{s} ({v})" for s, v in other) + ".")
+                   f"and are left out: "
+                   + ", ".join(f"{s} ({v or 'empty'})" for s, v in other) + ".")
             warnings.warn(msg, stacklevel=2)
             notes.append(msg)
         for g, role in zip(groups, ("data1_file", "data2_file")):

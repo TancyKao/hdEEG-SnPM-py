@@ -64,7 +64,10 @@ How the table reaches each analysis:
   Data 2, matched by subject. A subject with only one of the two sessions is left out, with a
   warning, and listed in the report.
 - `unpairedT`: `subjects_file` is joined and the table is split by the values of `group_col`
-  (default `group`) listed in `groups`. Subjects in any other group are left out and listed.
+  (default `group`) listed in `groups`. Group labels are compared as text, as written in the
+  file (`01` is not `1`, and `NA` is a label, not a missing value); subjects in any other
+  group, or with an empty group cell, are left out and listed. An empty name in `groups` is
+  refused.
 - `anova1`, `ancova`, `regression`: `subjects_file` is joined and its columns, with `Subject`
   and `session`, become the metadata columns, so `group_col`, `predictor_col` and
   `covariate_cols` name columns of `subjects_file`. These designs take one recording per subject.
@@ -90,7 +93,8 @@ database but no row in `subjects_file`, or a row but no database, stops the run 
 nobody is dropped silently.
 
 `examples/turtlewave_unpaired.toml` runs on synthetic databases built by
-`python examples/make_turtlewave_example.py`.
+`python examples/make_turtlewave_example.py`. The same settings can be filled in a window
+instead of a file: [Use the window (GUI)](use-the-gui.md).
 
 ## Which subject a database belongs to
 

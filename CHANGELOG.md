@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.0 (2026-10-26)
+
+Added:
+- A window for running an analysis straight from TurtleWave databases: `snpm gui` or
+  `snpm-gui`, with the optional extra `pip install "hdeeg-snpm[gui]"` (PyQt5). It lists what
+  the databases hold, takes the paired or unpaired t-test, the one-way ANOVA or a Pearson or
+  Spearman correlation, fills in the same settings as a `[turtlewave]` section and runs them in
+  the background; refusals come from the same checks as `snpm run` and are shown with their
+  text. **Save config…** writes the settings as a TOML file that `snpm run` repeats with
+  identical results. Without PyQt5 the command says how to install it. Guide:
+  `docs/how-to/use-the-gui.md`.
+
+Changed:
+- `[turtlewave]` with `unpairedT`: group labels in `subjects_file` are compared as text, as
+  written (`01` stays `01`, `1.5` stays `1.5`), and a subject whose group cell is empty is left
+  out and listed (it used to be compared as the text `nan`). Other columns are read as before.
+
 ## 0.5.0 (2026-10-25)
 
 Added:

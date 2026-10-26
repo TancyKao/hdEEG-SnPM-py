@@ -19,7 +19,7 @@ nothing may be excluded silently.
 
 ## Commands
 
-    uv venv --python 3.10 && uv pip install -e ".[dev]"
+    uv venv --python 3.10 && uv pip install -e ".[dev,gui]"   # gui: PyQt5, for the window tests
     .venv/bin/python -m pytest -q            # everything (about 90 s)
     .venv/bin/python -m pytest -m parity -q  # MATLAB parity only
     .venv/bin/ruff check .
@@ -51,6 +51,10 @@ nothing may be excluded silently.
 - `views.py`, `output.py`, `report/`: one description of an effect, then the writers.
 - `io/tables.py`, `io/turtlewave.py`: inputs. `io/turtlewave_config.py`: the `[turtlewave]`
   section of a run config (databases to the analysis files). `cli.py`: `snpm run config.toml`.
+- `gui/form.py` (no Qt): the window's choices as `[turtlewave]` run-config params and TOML.
+  `gui/window.py` (the only PyQt5 import): a thin view that calls `output.run_and_write` in a
+  `QThread`; it checks nothing itself. `snpm gui` / `snpm-gui`; extra `[gui]`. Tests run with
+  `QT_QPA_PLATFORM=offscreen`; `tools/gui_screenshot.py` remakes `docs/images/gui-window.png`.
 
 ## Fixtures
 
@@ -115,5 +119,6 @@ the dated log.
 
 ## Not ported
 
-GUI, spectral-power folders, the 2447-voxel source path. In the mixed linear model, any random
+MATLAB's App Designer GUI (the window in `gui/` covers TurtleWave databases only), spectral-power
+folders, the 2447-voxel source path. In the mixed linear model, any random
 structure other than one random intercept, `(1|G)`.

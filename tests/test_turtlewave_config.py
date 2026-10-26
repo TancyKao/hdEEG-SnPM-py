@@ -347,3 +347,39 @@ def test_density_from_databases(tmp_path):
     _, js = run(cfg)
     assert js["source"]["density_divided_by"] == ["NREM2+NREM3"]
     assert js["source"]["turtlewave_version"]
+
+
+@pytest.mark.parametrize("labels, groups", [
+    (["01", "02"] * 5 + ["01", ""], '["01", "02"]'),
+    (["1", "2"] * 5 + ["1", ""], "[1, 2]"),
+    (["1.5", "2.5"] * 5 + ["1.5", ""], '["1.5", "2.5"]'),
+])
+def test_group_labels_are_compared_as_written_and_an_empty_one_is_left_out(tmp_path, labels,
+                                                                          groups):
+    study(tmp_path / "db")
+    subjects_csv(tmp_path / "subjects.csv", group=labels)
+    top = f'comparison = "unpairedT"\ngroup_col = "group"\ngroups = {groups}'
+    params, source, notes = prepared(tmp_path, top, subjects_file="subjects.csv")
+    assert source["dropped_subjects"] == [{"subject": "s12", "reason": "group is empty"}]
+    assert "s12 (empty)" in notes[0]
+    assert len(pd.read_csv(params["data1_file"])) == 6
+    assert len(pd.read_csv(params["data2_file"])) == 5
+
+
+def test_a_group_label_written_differently_is_refused_with_the_labels_held(tmp_path):
+    study(tmp_path / "db")
+    subjects_csv(tmp_path / "subjects.csv", group=["01", "02"] * 6)
+    top = 'comparison = "unpairedT"\ngroup_col = "group"\ngroups = [1, 2]'
+    with pytest.raises(ValueError, match=r"Group\(s\) 1, 2 do not occur in 'group' \(01, 02\)"):
+        prepared(tmp_path, top, subjects_file="subjects.csv")
+
+
+def test_a_group_named_na_is_a_label_and_an_empty_group_name_is_refused(tmp_path):
+    study(tmp_path / "db")
+    subjects_csv(tmp_path / "subjects.csv", group=["NA", "None"] * 5 + ["NA", " "])
+    top = 'comparison = "unpairedT"\ngroup_col = "group"\ngroups = ["NA", "None"]'
+    params, source, _ = prepared(tmp_path, top, subjects_file="subjects.csv")
+    assert source["dropped_subjects"] == [{"subject": "s12", "reason": "group is empty"}]
+    assert len(pd.read_csv(params["data1_file"])) == 6
+    with pytest.raises(ValueError, match="groups names an empty group"):
+        prepared(tmp_path, top.replace('"None"]', '""]'), subjects_file="subjects.csv")
