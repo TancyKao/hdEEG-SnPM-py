@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.1 (2026-10-26)
+
+Fixed:
+- Density from databases written by TurtleWave 4.3 stopped with "no denominator": TurtleWave
+  4.6 looked for its current default reject set, which those databases do not store. The
+  reader now passes the reject set the detection stored (for 4.3: artefacts rejected, arousals
+  kept) to TurtleWave explicitly. A database storing several sets needs `reject_types` in the
+  `[turtlewave]` section (`"none"` names the set that rejects nothing); a table mixing sets,
+  and a stored set not in TurtleWave's key spelling, are refused. `recordings.csv` gets a
+  `reject_types` column (`none` for the empty set), and the report's Source card says
+  "Rejected before density". The MATLAB repository's `db_to_group_table.py` follows the same
+  rules.
+- `subject_from = "auto"` refused databases that store the subject with the session appended
+  (`sub-01_BL` in `sub-01/ses-BL/`); that ID now agrees with its folder and the folder subject
+  is used, so the sessions pair up.
+
+Changed:
+- The distribution is displayed as `hdEEG-SnPM` (pyproject `name`); PyPI normalises it to
+  `hdeeg-snpm`, so it is the same project and `pip install hdeeg-snpm` keeps working. The
+  import package `hdeeg_snpm`, the `snpm`/`snpm-gui` commands and the extras are unchanged.
+- The window shows the reject set of density ("Rejected before density"), or a choice of it
+  when the databases store several, and words a
+  subject-ID error for its menu ("set Subject ID from to folder or database").
+
 ## 0.6.0 (2026-10-26)
 
 Added:

@@ -46,6 +46,90 @@ def choices(available: pd.DataFrame, event_type: str) -> dict:
             "stages": tw._in_order(stages), "bands": bands}
 
 
+NO_TIME = "no analysed time stored, so no density"
+
+
+def _stored_sets(recordings) -> list[tuple[str, tuple | None, str]]:
+    """(who, reject sets stored or None when unreadable, error text) per database."""
+    out = []
+    for r in recordings:
+        try:
+            out.append((f"{r.subject} {r.session}".strip(),
+                        tuple(tw.stored_reject_sets(r.path)), ""))
+        except Exception as err:  # noqa: BLE001 - shown; the run reports it again
+            out.append((f"{r.subject} {r.session}".strip(), None, str(err)))
+    return out
+
+
+def reject_choices(recordings) -> list[str]:
+    """The reject sets to choose from when a database stores more than one: the sets every
+    database stores. Empty when there is nothing to choose (each stores one set) or no choice
+    could serve every database."""
+    found = [sets for _, sets, _ in _stored_sets(recordings)]
+    if not found or any(s is None for s in found) or all(len(s) <= 1 for s in found):
+        return []
+    return sorted(set.intersection(*(set(s) for s in found)))
+
+
+def reject_unshared(recordings) -> bool:
+    """True when every database stores analysed time but no reject set is stored by all of
+    them: no choice can make their densities comparable, so the window does not run."""
+    found = [sets for _, sets, _ in _stored_sets(recordings)]
+    return bool(found) and all(found) and \
+        not set.intersection(*(set(s) for s in found))
+
+
+def reject_text(recordings) -> str:
+    """What density's denominator was cleaned of, read from the databases: the one reject set
+    they all store (``"Artefact (as detected)"``), or what differs. Density uses that set; a
+    database without one is refused when the run starts, and one with several needs a choice."""
+    found = _stored_sets(recordings)
+    if found and all(sets is None for _, sets, _ in found):
+        return "could not read the reject sets of the databases: " + found[0][2]
+
+    def describe(sets):
+        if sets is None:
+            return "unreadable"
+        if not sets:
+            return NO_TIME
+        if len(sets) > 1:
+            return "several reject sets stored: " + " and ".join(map(tw.reject_label, sets))
+        return tw.reject_label(sets[0])
+    groups: dict = {}
+    for who, sets, _ in found:
+        groups.setdefault(sets, []).append(who)
+    if reject_unshared(recordings):
+        return ("no reject set is stored by every database ("
+                + "; ".join(f"{describe(k)}: {', '.join(who)}" for k, who in groups.items())
+                + "); these densities cannot be compared. Redetect so the runs match.")
+    if len(groups) == 1:
+        (sets,) = groups
+        if sets is not None and len(sets) == 1:
+            return f"{describe(sets)} (as detected)"
+        return describe(sets) + ("" if sets == () else f" ({', '.join(groups[sets])})")
+    return "differs between databases: " + "; ".join(
+        f"{describe(k)} ({', '.join(who)})" for k, who in groups.items())
+
+
+_CLI_HINTS = ((("Name one set every database stores with reject_types in the [turtlewave] "
+               "section, or redetect so the runs match."),
+               ("No reject set is stored by every database, so these densities cannot be "
+               "compared. Redetect so the runs match.")),
+              ("pass subject_from='database' or 'folder' to say which is right",
+               "set Subject ID from to folder or database"),
+              ("use subject_from='folder'", "set Subject ID from to folder"),
+              ("with reject_types in the [turtlewave] section",
+               'in "Rejected before density"'))
+
+
+def window_message(text: str) -> str:
+    """A loader error worded for the window, which sets the subject-ID source and the reject
+    set with menus."""
+    for cli, window in _CLI_HINTS:
+        text = text.replace(cli, window)
+    return text
+
+
 def subjects_table(path) -> pd.DataFrame:
     """A subjects file read as text, as ``prepare`` compares group labels, for listing its
     columns and values in the window."""
@@ -64,6 +148,9 @@ class FormState:
     subject_from: str = "auto"
     sessions_found: list[str] = field(default_factory=list)   # from the databases, not a param
     stages_found: list[str] = field(default_factory=list)     # from the databases, not a param
+    reject_sets_found: list[str] = field(default_factory=list)   # a choice is needed; not a param
+    reject_types: str | None = None        # density: the reject set chosen ('' rejects nothing)
+    reject_unshared: bool = False          # no set stored by every database; not a param
     event_type: str = ""
     method: str = ""
     stage: list[str] = field(default_factory=list)
@@ -106,6 +193,10 @@ class FormState:
             todo.append("at least one stage")
         if not self.measure:
             todo.append("a measure")
+        if self.measure == "density" and self.reject_sets_found and self.reject_types is None:
+            todo.append("the reject set of density")
+        if self.measure == "density" and self.reject_unshared:
+            todo.append("databases that share a reject set (see Rejected before density)")
         roles = self.roles()
         if "sessions" in roles and (len(self.sessions) != 2 or None in self.sessions
                                     or self.sessions[0] == self.sessions[1]):
@@ -157,6 +248,8 @@ class FormState:
         if self.band is not None:
             section["freq_lower"], section["freq_upper"] = self.band
         section.update(measure=self.measure, subject_from=self.subject_from)
+        if self.measure == "density" and self.reject_sets_found and self.reject_types is not None:
+            section["reject_types"] = tw.reject_written(self.reject_types)
         p["turtlewave"] = section
         return p
 
@@ -164,7 +257,7 @@ class FormState:
         """The run config as TOML text, for ``snpm run``."""
         params = self.to_params()
         section = params.pop("turtlewave")
-        lines = ["# Written by the hdeeg-snpm window. Run it again with: snpm run <this file>"]
+        lines = ["# Written by the hdEEG-SnPM window. Run it again with: snpm run <this file>"]
         lines += [f"{k} = {_value(v)}" for k, v in params.items()]
         lines += ["", "[turtlewave]"] + [f"{k} = {_value(v)}" for k, v in section.items()]
         return "\n".join(lines) + "\n"

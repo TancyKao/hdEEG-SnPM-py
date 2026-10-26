@@ -42,6 +42,7 @@ freq_lower    = 12
 freq_upper    = 15
 measure       = "density"          # density, amplitude, duration or count
 subject_from  = "auto"
+# reject_types = "Artefact"        # density only; by default the set detection stored
 ```
 
     snpm run study.toml
@@ -54,7 +55,8 @@ folder named like the run's results with `_tables` added
 run keeps its own tables and can be checked and repeated by hand. The summary file and the
 report get a "Source" record: the folder, the number of databases analysed and found, the event
 type, the method and band of the detection runs selected, the stages and measure, the stages
-density was divided by and the TurtleWave version that computed it, the interpolated channels
+density was divided by, the reject set its time was cleaned of ("Artefact (as detected)") and
+the TurtleWave version that computed it, the interpolated channels
 set to missing in the analysed recordings, and any subject left out.
 
 How the table reaches each analysis:
@@ -105,7 +107,10 @@ folder and the session is the `ses...` folder inside it:
     <subject>/wonambi/neural_events.db            subject from the folder, no session
 
 When a database stores an ID and the folder also names one, they must agree (a leading `sub-`
-is ignored). If they do not, the run stops and names the file. Pass
+is ignored). An ID that is the folder subject followed by the session also agrees:
+`sub-01_BL` in `sub-01/ses-BL/` (the session with or without `ses-`, letter case ignored). The
+subject is then the folder's, `sub-01`, so the sessions of one subject pair up. Any other
+disagreement stops the run and names the file. Pass
 `subject_from="database"` or `subject_from="folder"` to say which is right, for example when
 the folder above the database is not a subject folder.
 
@@ -128,6 +133,27 @@ with `condition_col = "session"`. A `[turtlewave]` section does either for you (
   or later). A channel the selected run processed without finding an event has density 0;
   channels that only another method processed are not added. When no event matches the request
   and the database lists more than one method for the band, name the method.
+
+### Which artefacts density's time excludes
+
+TurtleWave stores the analysed time of each stage once per reject set, the annotation types
+whose seconds were removed before detection (artefacts, arousals, movement). Density is divided
+by the time stored for the set the detection used, which is what `analysed_time` holds: a
+database written by TurtleWave 4.3 records it as two flags, artefacts rejected and arousals
+not, read as the set `Artefact`; later versions name the set (`Arousal,Artefact,Move`). The
+reader passes that set to TurtleWave explicitly, so it is never replaced by TurtleWave's
+current default, which a 4.3 database does not store and which would leave it without a
+density. The set is listed per recording in the `reject_types` column of `recordings.csv`.
+
+A database that stores several sets is refused unless `reject_types` in the `[turtlewave]`
+section names one (as text, `"Artefact"` or `"Artefact,Arousal"`; `""` or `"none"` is the set
+that rejects nothing, written `none` in `recordings.csv`; order and spaces do not matter). A
+stored set not in TurtleWave's own spelling (names sorted, comma-joined, no spaces) was written
+outside TurtleWave and is refused, naming it. In the window, a study whose databases store
+several sets shows a choice of the sets every database stores, which must be made before Run. A named set that a database does not store is
+refused with the sets it does store. Databases of one table that use different sets are
+refused, with the subjects under each set: their densities are divided by time cleaned in
+different ways and are not comparable. `reject_types` is used for density only.
 
 ### Which stages density is divided by
 
@@ -167,7 +193,11 @@ and follows the same rules for selecting a run, pooling stage tokens, refusing o
 runs, zero-event channels and interpolated channels. Both refuse density for a band with no
 event in scope whose processing record lists more than one method, because which method's
 channels count as zero is then undefined. On the same databases amplitude and duration are
-identical, and so is density when the database stores analysed time. The differences that
+identical, and so is density when the database stores analysed time. Both divide density by
+the reject set the database stores, by the same rules: several sets need one named
+(`--reject-types` in the bridge, `reject_types` here), a table mixing sets is refused, a stored
+set not in TurtleWave's key spelling is refused, and the empty set is written `none`. The
+differences that
 remain are listed, as the authority, in the "Deliberate differences from MATLAB" section of
 [CLAUDE.md](../../CLAUDE.md); this section explains them:
 
@@ -176,7 +206,8 @@ remain are listed, as the authority, in the "Deliberate differences from MATLAB"
   divides by hypnogram time of the stages the selected events are stored under and warns that
   this is biased by each recording's artefact load.
 - Subject labels: the bridge uses the folder name; the reader uses the ID stored in the database
-  when there is one (`sub-` prefix included).
+  when there is one (`sub-` prefix included), except an ID that is the folder subject plus the
+  session, where it uses the folder name too.
 - Columns: the bridge writes every channel seen in any band; the reader writes the channels of
   the band asked for.
 - A recording in which the band was never detected (no event and no record that it was

@@ -40,7 +40,11 @@ Without PyQt5 both stop with the install command above.
    type. All stages found are ticked; untick the ones to leave out (at least one must stay
    ticked). A detection run stored without a band shows no band. Measure is amplitude,
    duration, count or density. Density is computed by TurtleWave itself, so it is greyed out
-   when TurtleWave is not installed.
+   when TurtleWave is not installed. With density, "Rejected before density" shows the
+   annotation types removed from the time density is divided by, as stored by detection
+   (for example "Artefact (as detected)"). When the databases store more than one set, choose
+   one there instead (the list holds the sets every database stores); see [which artefacts density's time
+   excludes](read-turtlewave-databases.md#which-artefacts-densitys-time-excludes).
 3. **Analysis.** The analysis, the tail (t-tests only), the number of permutations, the seed,
    the recording system and the data type. When the seed is left empty, the window draws one
    when you press Run or Save config… and shows it in the field, so the saved config repeats

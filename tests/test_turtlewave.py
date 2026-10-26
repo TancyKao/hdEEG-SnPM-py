@@ -14,9 +14,25 @@ import pytest
 from hdeeg_snpm.io import tables
 from hdeeg_snpm.io import turtlewave as tw
 
+ANALYSED_43 = """CREATE TABLE analysed_time (
+    subject TEXT NOT NULL, stage TEXT NOT NULL, reject_artifacts INTEGER NOT NULL,
+    reject_arousals INTEGER NOT NULL, analysed_seconds REAL NOT NULL,
+    artefact_seconds_excluded REAL, epoch_length REAL, source TEXT, annotation_file TEXT,
+    turtlewave_version TEXT, processing_timestamp TEXT,
+    PRIMARY KEY (subject, stage, reject_artifacts, reject_arousals))"""
+ANALYSED_44 = """CREATE TABLE analysed_time (
+    subject TEXT NOT NULL, stage TEXT NOT NULL, reject_types TEXT NOT NULL,
+    reject_artifacts INTEGER NOT NULL, reject_arousals INTEGER NOT NULL,
+    analysed_seconds REAL NOT NULL, artefact_seconds_excluded REAL, epoch_length REAL,
+    source TEXT, annotation_file TEXT, turtlewave_version TEXT, processing_timestamp TEXT,
+    PRIMARY KEY (subject, stage, reject_types))"""
 
-def make_db(folder, events, subject=None, interpolated=None):
-    """events: (channel, duration, peak2peak) rows of one spindle run stored as 'NREM2NREM3'."""
+
+def make_db(folder, events, subject=None, interpolated=None, analysed=None):
+    """events: (channel, duration, peak2peak) rows of one spindle run stored as 'NREM2NREM3'.
+    analysed: {reject set: {stage: seconds}} stored in analysed_time for ``subject``; a set
+    given as (reject_artifacts, reject_arousals) writes TurtleWave 4.3's table, as text
+    (``'Artefact'``) the reject_types table of 4.4 on."""
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / tw.DB_NAME
     con = sqlite3.connect(path)
@@ -24,6 +40,19 @@ def make_db(folder, events, subject=None, interpolated=None):
                 "freq_lower REAL, freq_upper REAL, duration REAL, peak2peak_amp REAL)")
     con.executemany("INSERT INTO events VALUES (?, 'spindle', 'Moelle2011', 'NREM2NREM3', 12, 15, "
                     "?, ?)", events)
+    if analysed:
+        old = all(isinstance(k, tuple) for k in analysed)
+        con.execute(ANALYSED_43 if old else ANALYSED_44)
+        for key, seconds in analysed.items():
+            for stage, sec in seconds.items():
+                if old:
+                    con.execute("INSERT INTO analysed_time VALUES (?, ?, ?, ?, ?, 0, 30, "
+                                "'detection', NULL, '4.3.0', NULL)", (subject, stage, *key, sec))
+                else:
+                    flags = (int("Artefact" in key), int("Arousal" in key))
+                    con.execute("INSERT INTO analysed_time VALUES (?, ?, ?, ?, ?, ?, 0, 30, "
+                                "'detection', NULL, '4.6.2', NULL)",
+                                (subject, stage, key, *flags, sec))
     if subject is not None:
         con.execute("CREATE TABLE stage_durations (subject TEXT)")
         con.execute("INSERT INTO stage_durations VALUES (?)", (subject,))
@@ -112,11 +141,15 @@ def test_density_needs_turtlewave_and_says_so(tmp_path):
     con.execute("CREATE TABLE analysed_time (subject TEXT, stage TEXT, analysed_seconds REAL)")
     con.commit()
     con.close()
+    with pytest.raises(ValueError, match="no time under any reject set"):
+        tw.event_table(recs, "density", "spindle")
+    path = make_db(tmp_path / "s02" / "wonambi", EVENTS, subject="s02",
+                   analysed={(1, 0): {"NREM2": 600.0}})
     try:
         import turtlewave_hdEEG  # noqa: F401
     except ImportError:
         with pytest.raises(ImportError, match="turtlewave"):
-            tw.event_table(recs, "density", "spindle")
+            tw.event_table(tw.find_recordings([path]), "density", "spindle")
 
 
 def test_tables_are_written_with_a_recordings_file(tmp_path):
@@ -401,3 +434,126 @@ def test_density_for_stages_the_run_never_searched_is_refused(tmp_path, monkeypa
     monkeypatch.setitem(sys.modules, "turtlewave_hdEEG", None)
     with pytest.raises(ValueError, match="searched NREM3, none of the requested stages"):
         tw.event_table(tw.find_recordings([path]), "density", "slow_wave", stage="NREM2")
+
+
+def test_the_reject_sets_stored_in_either_table(tmp_path):
+    """TurtleWave 4.3 keys analysed time on two flags, 4.4 on reject_types text; both read as
+    TurtleWave's sorted key."""
+    def stored(name, analysed):
+        return tw.stored_reject_sets(make_db(tmp_path / name, EVENTS, "s01", analysed=analysed))
+    assert stored("a", {(1, 0): {"NREM2": 60.0}}) == ["Artefact"]
+    assert stored("b", {(1, 1): {"NREM2": 60.0}, (0, 0): {"NREM2": 90.0},
+                        (0, 1): {"NREM2": 70.0}}) == ["", "Arousal", "Arousal,Artefact"]
+    assert stored("c", {"Arousal,Artefact,Move": {"NREM2": 60.0}}) == ["Arousal,Artefact,Move"]
+    assert stored("d", None) == []
+    assert tw.reject_key("Artefact, Arousal") == tw.reject_key(["Arousal", "Artefact"]) == \
+        "Arousal,Artefact"
+
+
+def test_reject_set_refusals_come_before_turtlewave(tmp_path, monkeypatch):
+    seconds = {"NREM2": 1800.0, "NREM3": 600.0}
+    two = make_db(tmp_path / "s01" / "wonambi", EVENTS, "s01",
+                  analysed={(1, 0): seconds, (1, 1): seconds})
+    art = make_db(tmp_path / "s02" / "wonambi", EVENTS, "s02", analysed={(1, 0): seconds})
+    both = make_db(tmp_path / "s03" / "wonambi", EVENTS, "s03",
+                   analysed={"Arousal,Artefact": seconds})
+    for name in ("turtlewave_hdEEG", "turtlewave_hdEEG.density"):
+        monkeypatch.setitem(sys.modules, name, None)               # importing it now fails
+
+    def density(paths, **kw):
+        return tw.event_table(tw.find_recordings(paths), "density", "spindle",
+                              stage=["NREM2", "NREM3"], **kw)
+    with pytest.raises(ValueError, match=r"2 reject sets \(Arousal, Artefact; Artefact\)"):
+        density([two])
+    with pytest.raises(ValueError, match=r"only for the reject set\(s\) Artefact, not for "
+                                         r"nothing rejected"):
+        density([art], reject_types="")
+    with pytest.raises(ValueError, match=r"different reject sets.*\(Artefact: s02; "
+                                         r"Arousal, Artefact: s03\)"):
+        density([art, both])
+    with pytest.raises(ImportError, match="turtlewave"):           # the checks passed
+        density([two, both], reject_types="Arousal, Artefact")
+
+
+def test_density_passes_the_set_detection_stored(tmp_path):
+    """A 4.3 database stores one set (artefacts rejected, arousals kept); density is read under
+    it, not under TurtleWave's default, and equals event_density asked for it by name. With two
+    sets stored, the configured one is used."""
+    density = pytest.importorskip("turtlewave_hdEEG.density")
+    old = make_db(tmp_path / "s01" / "wonambi", EVENTS, "s01",
+                  analysed={(1, 0): {"NREM2": 1800.0, "NREM3": 600.0}})
+    new = make_db(tmp_path / "s02" / "wonambi", EVENTS, "s02",
+                  analysed={"Artefact": {"NREM2": 1200.0, "NREM3": 600.0}})
+    dens, manifest = tw.event_table(tw.find_recordings([old, new]), "density", "spindle",
+                                    stage=["NREM2", "NREM3"])
+    assert list(manifest["reject_types"]) == ["Artefact", "Artefact"]
+    for i, path in enumerate((old, new)):
+        direct = density.event_density(str(path), event_type="spindle", method="Moelle2011",
+                                       stage=["NREM2", "NREM3"], combine_stages=True,
+                                       freq_lower=12, freq_upper=15, reject_types="Artefact")
+        assert dens.iloc[i, 2:].dropna().to_dict() == dict(zip(direct["channel"],
+                                                               direct["density_per_min"]))
+    assert dens.loc[0, "E1"] == pytest.approx(2 / 40) and dens.loc[1, "E1"] == pytest.approx(2 / 30)
+    two = make_db(tmp_path / "s03" / "wonambi", EVENTS, "s03",
+                  analysed={(1, 0): {"NREM2": 1800.0, "NREM3": 600.0},
+                            (1, 1): {"NREM2": 900.0, "NREM3": 300.0}})
+    dens, manifest = tw.event_table(tw.find_recordings([two]), "density", "spindle",
+                                    stage=["NREM2", "NREM3"], reject_types="Artefact,Arousal")
+    assert dens.loc[0, "E1"] == pytest.approx(2 / 20)
+    assert manifest.loc[0, "reject_types"] == "Arousal,Artefact"
+
+
+def test_a_database_id_with_the_session_agrees_with_its_folder(tmp_path):
+    for ses, sid in (("ses-BL", "sub-01ab_BL"), ("ses-TR", "sub-01ab_ses-tr")):
+        make_db(tmp_path / "ok" / "sub-01ab" / ses / "wonambi", EVENTS, subject=sid)
+    recs = tw.find_recordings(tmp_path / "ok")
+    assert [(r.subject, r.session) for r in recs] == [("sub-01ab", "ses-BL"),
+                                                      ("sub-01ab", "ses-TR")]
+    assert recs[0].subject_source == "folder (database ID adds the session)"
+    for name, sid in (("wrong_session", "sub-01ab_TR"), ("other", "sub-99zz")):
+        make_db(tmp_path / name / "sub-01ab" / "ses-BL" / "wonambi", EVENTS, subject=sid)
+        with pytest.raises(ValueError, match=f"says subject '{sid}' but its folder says "
+                                             "'sub-01ab'"):
+            tw.find_recordings(tmp_path / name)
+    make_db(tmp_path / "flat" / "sub-01ab" / "wonambi", EVENTS, subject="sub-01ab_BL")
+    with pytest.raises(ValueError, match="says subject"):           # no session folder
+        tw.find_recordings(tmp_path / "flat")
+
+
+def test_a_stored_reject_set_spelled_outside_turtlewave_is_refused(tmp_path):
+    path = make_db(tmp_path / "s01" / "wonambi", EVENTS, "s01",
+                   analysed={"Artefact,Arousal": {"NREM2": 60.0}})
+    with pytest.raises(ValueError, match="stores reject set\\(s\\) 'Artefact,Arousal' that are "
+                                         "not in TurtleWave's key spelling"):
+        tw.stored_reject_sets(path)
+
+
+def test_none_names_the_set_that_rejects_nothing(tmp_path, monkeypatch):
+    assert tw.reject_key("none") == tw.reject_key(" NONE ") == tw.reject_key("") == ""
+    assert tw.reject_key(["none"]) == tw.reject_key([]) == ""
+    assert tw.reject_key(["Artefact, Arousal"]) == "Arousal,Artefact"
+    assert tw.reject_label("none") == "nothing rejected" and tw.reject_written("") == "none"
+    path = make_db(tmp_path / "s01" / "wonambi", EVENTS, "s01",
+                   analysed={(1, 0): {"NREM2": 60.0}, (0, 0): {"NREM2": 90.0}})
+    for name in ("turtlewave_hdEEG", "turtlewave_hdEEG.density"):
+        monkeypatch.setitem(sys.modules, name, None)
+    with pytest.raises(ImportError, match="turtlewave"):           # "none" is a stored set
+        tw.event_table(tw.find_recordings([path]), "density", "spindle", stage=["NREM2", "NREM3"],
+                       reject_types="None")
+
+
+def test_density_with_nothing_rejected(tmp_path):
+    """A database whose detection rejected nothing (flags 0, 0) is read under the empty set,
+    written none, and equals event_density asked for that set."""
+    density = pytest.importorskip("turtlewave_hdEEG.density")
+    path = make_db(tmp_path / "s01" / "wonambi", EVENTS, "s01",
+                   analysed={(0, 0): {"NREM2": 1500.0, "NREM3": 900.0}})
+    dens, manifest = tw.event_table(tw.find_recordings([path]), "density", "spindle",
+                                    stage=["NREM2", "NREM3"])
+    assert manifest.loc[0, "reject_types"] == "none"
+    assert dens.loc[0, "E1"] == pytest.approx(2 / 40)
+    direct = density.event_density(str(path), event_type="spindle", method="Moelle2011",
+                                   stage=["NREM2", "NREM3"], combine_stages=True,
+                                   freq_lower=12, freq_upper=15, reject_types=[])
+    assert dens.iloc[0, 2:].dropna().to_dict() == dict(zip(direct["channel"],
+                                                           direct["density_per_min"]))

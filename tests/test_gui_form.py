@@ -170,3 +170,80 @@ def test_gui_without_pyqt5_prints_how_to_install(monkeypatch, capsys):
     assert gui.main() == 1
     assert 'pip install "hdeeg-snpm[gui]"' in capsys.readouterr().err
     assert cli.main(["gui"]) == 1
+
+
+def test_the_reject_set_shown_is_the_one_detection_stored(tmp_path):
+    def recs(name, *analysed):
+        for i, a in enumerate(analysed):
+            make_db(tmp_path / name / f"s0{i}" / "wonambi", [("E1", 1.0, 40.0)], f"s0{i}",
+                    analysed=a)
+        return tw.find_recordings(tmp_path / name)
+    seconds = {"NREM2": 600.0}
+    assert form.reject_text(recs("a", {(1, 0): seconds}, {"Artefact": seconds})) == \
+        "Artefact (as detected)"
+    assert form.reject_text(recs("b", {(1, 1): seconds}, {(1, 0): seconds})) == \
+        "no reject set is stored by every database (Arousal, Artefact: s00; Artefact: s01); " \
+        "these densities cannot be compared. Redetect so the runs match."
+    assert form.reject_text(recs("c", None)) == "no analysed time stored, so no density"
+    assert form.reject_text(recs("d", {(1, 0): seconds, (0, 0): seconds})) == \
+        "several reject sets stored: nothing rejected and Artefact (s00)"
+    assert form.reject_text(recs("e", {"Artefact,Arousal": seconds})).startswith(
+        "could not read the reject sets of the databases: ")     # not TurtleWave's spelling
+    assert form.reject_text(recs("f", {(1, 0): seconds}, {"Artefact,Arousal": seconds})) == \
+        "differs between databases: Artefact (s00); unreadable (s01)"
+    unshared = recs("g", {(1, 0): seconds, (1, 1): seconds}, {(0, 0): seconds, (0, 1): seconds})
+    assert form.reject_unshared(unshared) and form.reject_choices(unshared) == []
+    assert form.reject_text(unshared) == (
+        "no reject set is stored by every database (several reject sets stored: Arousal, "
+        "Artefact and Artefact: s00; several reject sets stored: nothing rejected and Arousal: "
+        "s01); these densities cannot be compared. Redetect so the runs match.")
+    with pytest.raises(ValueError) as err:
+        tw.event_table(unshared, "density", "spindle", stage="NREM2", reject_types="Artefact")
+    assert "only for the reject set(s) nothing rejected; Arousal" in str(err.value)
+    with pytest.raises(ValueError) as err:
+        tw.event_table(recs("h", {(1, 0): seconds}, {(1, 1): seconds}), "density", "spindle",
+                       stage="NREM2")
+    assert form.window_message(str(err.value)).endswith(
+        "No reject set is stored by every database, so these densities cannot be compared. "
+        "Redetect so the runs match.")
+
+
+def test_a_choice_of_reject_set_when_a_database_stores_several(tmp_path):
+    seconds = {"NREM2": 600.0}
+    make_db(tmp_path / "db" / "s01" / "wonambi", [("E1", 1.0, 40.0)], "s01",
+            analysed={"Artefact": seconds, "": seconds, "Arousal,Artefact": seconds})
+    make_db(tmp_path / "db" / "s02" / "wonambi", [("E1", 1.0, 40.0)], "s02",
+            analysed={"Artefact": seconds, "": seconds})
+    recs = tw.find_recordings(tmp_path / "db")
+    assert form.reject_choices(recs) == ["", "Artefact"]          # stored by every database
+    assert form.reject_choices(recs[1:2]) == ["", "Artefact"]
+    single = tmp_path / "one" / "s01" / "wonambi"
+    make_db(single, [("E1", 1.0, 40.0)], "s01", analysed={(1, 0): seconds})
+    assert form.reject_choices(tw.find_recordings(tmp_path / "one")) == []
+    state = form.FormState(folder=str(tmp_path / "db"), event_type="spindle", measure="density",
+                           comparison="pairedT", sessions=["", "x"], output_path="out",
+                           reject_sets_found=["", "Artefact"])
+    assert "the reject set of density" in state.missing()
+    assert "reject_types" not in state.to_params()["turtlewave"]
+    state.reject_types = ""
+    assert "the reject set of density" not in state.missing()
+    assert state.to_params()["turtlewave"]["reject_types"] == "none"
+    assert 'reject_types = "none"' in state.to_toml()
+    state.measure = "amplitude"
+    assert "reject_types" not in state.to_params()["turtlewave"]
+    blocked = form.FormState(folder="db", event_type="spindle", measure="density",
+                             comparison="pairedT", sessions=["", "x"], output_path="out",
+                             reject_unshared=True)
+    assert any("share a reject set" in m for m in blocked.missing())
+    with pytest.raises(ValueError) as err:
+        tw.event_table(recs, "density", "spindle", stage="NREM2")
+    text = form.window_message(str(err.value))
+    assert 'name the one to use in "Rejected before density"' in text and "[turtlewave]" not in text
+
+
+def test_a_subject_id_error_is_worded_for_the_window(tmp_path):
+    make_db(tmp_path / "11xx" / "wonambi", [("E1", 1.0, 40.0)], subject="sub-99zz")
+    with pytest.raises(ValueError) as err:
+        tw.find_recordings(tmp_path)
+    text = form.window_message(str(err.value))
+    assert "set Subject ID from to folder or database" in text and "subject_from" not in text

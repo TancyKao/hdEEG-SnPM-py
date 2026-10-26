@@ -2,6 +2,7 @@
 equal to building the tables first and naming them in a hand-written config."""
 
 import json
+import sys
 import time
 import warnings
 
@@ -383,3 +384,61 @@ def test_a_group_named_na_is_a_label_and_an_empty_group_name_is_refused(tmp_path
     assert len(pd.read_csv(params["data1_file"])) == 6
     with pytest.raises(ValueError, match="groups names an empty group"):
         prepared(tmp_path, top.replace('"None"]', '""]'), subjects_file="subjects.csv")
+
+
+def detected_43(root, seed=2):
+    """Two sessions per subject from TurtleWave 4.3: the database stores '<subject>_<session>'
+    and one reject set, artefacts rejected and arousals kept."""
+    rng = np.random.default_rng(seed)
+    for s in SUBJECTS:
+        for ses in ("BL", "TR"):
+            events = [(ch, 1.0, 40.0) for ch in CHANNELS for _ in range(int(rng.integers(1, 8)))]
+            make_db(root / f"sub-{s}" / f"ses-{ses}" / "wonambi", events, subject=f"sub-{s}_{ses}",
+                    analysed={(1, 0): {"NREM2": 1800.0, "NREM3": float(rng.uniform(300, 900))}})
+
+
+def test_paired_density_from_43_databases_uses_the_detected_reject_set(tmp_path):
+    pytest.importorskip("turtlewave_hdEEG.density")
+    detected_43(tmp_path / "db")
+    cfg = config(tmp_path / "study.toml", 'comparison = "pairedT"\n'
+                 'sessions = ["ses-BL", "ses-TR"]', "density")
+    _, js = run(cfg)
+    assert js["source"]["reject_types"] == "Artefact"
+    assert js["source"]["reject_types_from"] == "detection"
+    rec = pd.read_csv(next((tmp_path / "out").rglob("recordings.csv")), keep_default_na=False)
+    assert set(rec["reject_types"]) == {"Artefact"} and len(rec) == 24
+    assert set(rec["Subject"]) == {f"sub-{s}" for s in SUBJECTS}
+    html = next((tmp_path / "out").glob("*_report.html")).read_text()
+    assert "Rejected before density" in html and "Artefact (as detected)" in html
+    cfg.write_text(cfg.read_text().replace("[turtlewave]\n",
+                                           '[turtlewave]\nreject_types = "Artefact"\n'))
+    _, js = run(cfg)
+    assert js["source"]["reject_types_from"] == "config"
+    html = max((tmp_path / "out").glob("*_report.html"), key=lambda p: p.stat().st_mtime)
+    assert "Artefact (as configured)" in html.read_text()
+
+
+def test_a_reject_set_that_is_not_text_is_refused(tmp_path):
+    detected_43(tmp_path / "db")
+    top = 'comparison = "pairedT"\nsessions = ["ses-BL", "ses-TR"]'
+    params = cli.load_config(config(tmp_path / "study.toml", top, "density"))
+    params["turtlewave"]["reject_types"] = 1
+    with pytest.raises(ValueError, match="reject_types is the reject set as text"):
+        twc.prepare(params, tmp_path / "probe")
+
+
+def test_a_reject_set_given_as_a_list_of_none_is_the_empty_set(tmp_path, monkeypatch):
+    for s in SUBJECTS[:3]:
+        for ses in ("BL", "TR"):
+            make_db(tmp_path / "db" / s / f"ses-{ses}" / "wonambi", [("E1", 1.0, 40.0)], s,
+                    analysed={(1, 0): {"NREM2": 600.0}, (0, 0): {"NREM2": 900.0}})
+    for name in ("turtlewave_hdEEG", "turtlewave_hdEEG.density"):
+        monkeypatch.setitem(sys.modules, name, None)               # importing it now fails
+    top = 'comparison = "pairedT"\nsessions = ["ses-BL", "ses-TR"]'
+    params = cli.load_config(config(tmp_path / "study.toml", top, "density"))
+    params["turtlewave"]["reject_types"] = ["none"]
+    with pytest.raises(ImportError, match="turtlewave"):           # every reject check passed
+        twc.prepare(params, tmp_path / "probe")
+    params["turtlewave"]["reject_types"] = ["Move"]
+    with pytest.raises(ValueError, match="not for Move"):
+        twc.prepare(params, tmp_path / "probe")

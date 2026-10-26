@@ -8,6 +8,7 @@ import numpy as np
 from jinja2 import Environment, PackageLoader, select_autoescape
 
 from .. import __version__
+from ..io.turtlewave import reject_label
 from ..legacy import COMPARISONS as LEGACY_COMPARISONS
 from .topoplot import data_uri, effect_figure
 
@@ -105,6 +106,11 @@ def _source_rows(source) -> list[tuple[str, str]]:
     if "density_divided_by" in source:
         rows.append(("Density divided by the analysed time of",
                      ", ".join(source["density_divided_by"])))
+        if "reject_types" in source:
+            how = ("as detected" if source.get("reject_types_from") == "detection"
+                   else "as configured")
+            rows.append(("Rejected before density",
+                         f"{reject_label(source['reject_types'])} ({how})"))
         rows.append(("TurtleWave version", source.get("turtlewave_version") or "unknown"))
     interp = source.get("interpolated_channels") or {}
     rows.append(("Interpolated channels set to missing",

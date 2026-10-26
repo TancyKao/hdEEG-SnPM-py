@@ -111,7 +111,7 @@ def _row(*widgets):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("hdeeg-snpm: analyse TurtleWave databases")
+        self.setWindowTitle("hdEEG-SnPM: analyse TurtleWave databases")
         self.state = form.FormState()
         self.available = self.subjects = None
         self.loaded_folder = self.loaded_subjects = ""     # the paths read, not the text shown
@@ -165,6 +165,17 @@ class MainWindow(QWidget):
         events.addRow("Stages", self.stages)
         events.addRow("Band", self.band)
         events.addRow("Measure", self.measure)
+        self.reject = QLabel()
+        self.reject.setWordWrap(True)
+        self.reject.setToolTip("The artefact types removed from the time density is divided "
+                               "by, as stored by detection.")
+        self.reject_choice = QComboBox()       # shown instead when a database stores several
+        self.reject_choice.setToolTip("The databases store analysed time for more than one "
+                                      "reject set; choose the one density is divided by.")
+        self.reject_choice.currentIndexChanged.connect(self.refresh)
+        self.reject_row = _row(self.reject, self.reject_choice)
+        events.addRow("Rejected before density", self.reject_row)
+        self.events_form = events
 
         # 3. Analysis
         self.analysis = QComboBox()
@@ -290,6 +301,9 @@ class MainWindow(QWidget):
             return
         self.loaded_folder, self.state.sessions_found = "", []
         self.recordings.setRowCount(0)
+        self.reject.setText("")
+        self.state.reject_sets_found, self.state.reject_unshared = [], False
+        _fill(self.reject_choice, [])
         if not text:
             self.summary.setText("No study loaded.")
             self.refresh()
@@ -301,7 +315,7 @@ class MainWindow(QWidget):
                 recs = tw.find_recordings(text, self.subject_from.currentData())
                 self.available = tw.available(recs)
         except Exception as err:     # noqa: BLE001 - shown; the folder stays unloaded
-            self.summary.setText(f"Could not read the study: {err}")
+            self.summary.setText(f"Could not read the study: {form.window_message(str(err))}")
             self.refresh()
             return
         finally:
@@ -312,6 +326,12 @@ class MainWindow(QWidget):
             f"{len(recs)} databases, {len({r.subject for r in recs})} subjects, sessions: "
             f"{', '.join(s or '(none)' for s in sessions)}."
             + "".join(f"\n{w.message}" for w in caught))
+        self.reject.setText(form.reject_text(recs))
+        choices = form.reject_choices(recs)
+        self.state.reject_sets_found = choices
+        self.state.reject_unshared = form.reject_unshared(recs)
+        _fill(self.reject_choice, [(tw.reject_label(k), k) for k in choices],
+              placeholder="choose a reject set")
         self.recordings.setRowCount(len(recs))
         for i, r in enumerate(recs):
             for j, v in enumerate((r.subject, r.session, r.subject_source)):
@@ -393,6 +413,7 @@ class MainWindow(QWidget):
         s.stage = [self.stages.item(i).text() for i in range(self.stages.count())
                    if self.stages.item(i).checkState() == Qt.Checked]
         s.measure = _data(self.measure) or ""
+        s.reject_types = _data(self.reject_choice)
         s.comparison = _data(self.analysis)
         s.tail = _data(self.tail)
         s.permutations = self.permutations.value()
@@ -411,6 +432,11 @@ class MainWindow(QWidget):
         for key, w in self.role_rows.items():
             w.setVisible(key in shown)
             self.roles.labelForField(w).setVisible(key in shown)
+        density, choose = self.state.measure == "density", bool(self.state.reject_sets_found)
+        self.reject_row.setVisible(density)
+        self.events_form.labelForField(self.reject_row).setVisible(density)
+        self.reject.setVisible(not choose)
+        self.reject_choice.setVisible(choose)
         is_t = self.state.comparison in form.T_TESTS
         self.tail.setVisible(is_t)
         self.analysis_form.labelForField(self.tail).setVisible(is_t)
@@ -482,6 +508,7 @@ class MainWindow(QWidget):
         self.open_btn.setEnabled(True)
 
     def _failed(self, message):
+        message = form.window_message(message)
         self.log.appendPlainText(f"Stopped: {message}")
         self.error_box = QMessageBox(QMessageBox.Critical, "The analysis did not run", message,
                                      parent=self)

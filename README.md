@@ -1,4 +1,4 @@
-# hdeeg-snpm (Python)
+# hdEEG-SnPM (Python)
 
 Permutation statistics for high-density EEG scalp topographies: a statistic per channel,
 threshold-free cluster enhancement (TFCE) and cluster correction over the channel-neighbour
@@ -9,7 +9,7 @@ The MATLAB toolbox is the reference: an analysis here counts as validated only o
 the MATLAB statistic maps and corrected p-values on shared inputs using the same permutation
 indices.
 
-**Status: v0.6.0, beta. It reproduces the MATLAB toolbox on the parity fixtures (phases 1 to 3); the MATLAB toolbox stays the reference. Changes: [CHANGELOG.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/CHANGELOG.md).**
+**Status: v0.6.1, beta. It reproduces the MATLAB toolbox on the parity fixtures (phases 1 to 3); the MATLAB toolbox stays the reference. Changes: [CHANGELOG.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/CHANGELOG.md).**
 
 | Piece | State |
 |---|---|

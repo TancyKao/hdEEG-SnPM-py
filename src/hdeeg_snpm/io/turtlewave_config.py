@@ -21,7 +21,7 @@ from . import tables
 from . import turtlewave as tw
 
 KEYS = ("folder", "event_type", "method", "stage", "freq_lower", "freq_upper", "measure",
-        "subject_from", "subjects_file")
+        "subject_from", "subjects_file", "reject_types")
 _SCOPE = ("method", "stage", "freq_lower", "freq_upper")
 _ONE_ROW = ("onesampleT", "unpairedT", "correlationP", "correlationS")
 _JOINED = ("anova1", "ancova", "regression", "rmanova", "mixed2way")
@@ -171,10 +171,17 @@ def prepare(params: dict, out: Path):
         raise ValueError("use_covariates needs covariate_file (Subject plus the covariates); "
                          "the covariates of a correlation are not taken from subjects_file.")
 
+    reject = cfg.get("reject_types")
+    if reject is not None and not (isinstance(reject, str) or (
+            isinstance(reject, list) and all(isinstance(n, str) for n in reject))):
+        raise ValueError("[turtlewave] reject_types is the reject set as text, for example "
+                         "\"Artefact\" or \"Artefact,Arousal\" (\"\" rejects nothing).")
+
     recordings = tw.find_recordings(cfg["folder"], cfg.get("subject_from", "auto"))
     scope = {k: cfg[k] for k in _SCOPE if cfg.get(k) is not None}
     measure, event_type = cfg["measure"], cfg["event_type"]
-    table, manifest = tw.event_table(recordings, measure, event_type, **scope)
+    table, manifest = tw.event_table(recordings, measure, event_type, reject_types=reject,
+                                     **scope)
 
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -336,6 +343,8 @@ def prepare(params: dict, out: Path):
               "dropped_subjects": dropped, "tables": str(out), **routing}
     if measure == "density":
         source["density_divided_by"] = sorted(set(manifest["stages"]))
+        source["reject_types"] = manifest["reject_types"].iloc[0]       # one set, checked
+        source["reject_types_from"] = "detection" if reject is None else "config"
         source["turtlewave_version"] = _density_version()
     if cfg.get("subjects_file"):
         source["subjects_file"] = str(cfg["subjects_file"])

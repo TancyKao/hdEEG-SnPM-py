@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from hdeeg_snpm import cli
+from test_turtlewave import make_db
 from test_turtlewave_config import SUBJECTS, same, study, subjects_csv
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -224,3 +225,68 @@ def test_a_new_subject_id_source_keeps_the_stage_ticks(unpaired):
     win.stages.item(0).setCheckState(Qt.Unchecked)
     choose(win.subject_from, "folder")
     assert win.stages.item(0).checkState() == Qt.Unchecked and win.state.stage == ["NREM3"]
+
+
+def test_a_subject_id_disagreement_is_shown_in_window_words(tmp_path):
+    study(tmp_path / "db")
+    with sqlite3.connect(tmp_path / "db" / "s01" / "wonambi" / "neural_events.db") as con:
+        con.execute("CREATE TABLE stage_durations (subject TEXT)")
+        con.execute("INSERT INTO stage_durations VALUES ('sub-99zz')")
+    win = MainWindow()
+    win.load_folder(tmp_path / "db")
+    text = win.summary.text()
+    assert text.startswith("Could not read the study:") and "sub-99zz" in text
+    assert "set Subject ID from to folder or database" in text and "subject_from" not in text
+    choose(win.subject_from, "folder")
+    assert win.summary.text().startswith("12 databases")
+    win.close()
+
+
+def test_the_reject_set_is_shown_for_density(tmp_path):
+    for s in ("s01", "s02"):
+        make_db(tmp_path / "db" / s / "wonambi", [("E1", 1.0, 40.0)], s,
+                analysed={(1, 0): {"NREM2": 600.0}})
+    win = MainWindow()
+    win.load_folder(tmp_path / "db")
+    assert win.reject.text() == "Artefact (as detected)"
+    assert win.reject_row.isHidden()                     # amplitude: not shown
+    choose(win.measure, "density")       # set even when the item is disabled (no TurtleWave)
+    assert not win.reject_row.isHidden() and not win.reject.isHidden()
+    assert win.reject_choice.isHidden() and "reject_types" not in win.state.to_params()[
+        "turtlewave"]
+    win.close()
+
+
+def test_a_reject_set_must_be_chosen_when_databases_store_several(tmp_path):
+    for s in ("s01", "s02"):
+        make_db(tmp_path / "db" / s / "wonambi", [("E1", 1.0, 40.0)], s,
+                analysed={(1, 0): {"NREM2": 600.0}, (1, 1): {"NREM2": 500.0}})
+    win = MainWindow()
+    win.load_folder(tmp_path / "db")
+    win.out_edit.setText(str(tmp_path / "out"))
+    choose(win.measure, "density")
+    assert win.reject.isHidden() and not win.reject_choice.isHidden()
+    assert [win.reject_choice.itemData(i) for i in range(1, win.reject_choice.count())] == \
+        ["Arousal,Artefact", "Artefact"]
+    assert win.reject_choice.currentData() == "\x00unset"          # no default
+    assert not win.run_btn.isEnabled() and "the reject set of density" in win.hint.text()
+    choose(win.reject_choice, "Artefact")
+    assert win.state.to_params()["turtlewave"]["reject_types"] == "Artefact"
+    win.close()
+
+
+def test_run_is_blocked_when_no_reject_set_is_shared(tmp_path):
+    make_db(tmp_path / "db" / "s01" / "wonambi", [("E1", 1.0, 40.0)], "s01",
+            analysed={(1, 0): {"NREM2": 600.0}, (1, 1): {"NREM2": 500.0}})
+    make_db(tmp_path / "db" / "s02" / "wonambi", [("E1", 1.0, 40.0)], "s02",
+            analysed={(0, 0): {"NREM2": 600.0}, (0, 1): {"NREM2": 500.0}})
+    win = MainWindow()
+    win.load_folder(tmp_path / "db")
+    win.out_edit.setText(str(tmp_path / "out"))
+    choose(win.measure, "density")
+    assert win.reject_choice.isHidden() and win.reject.text().startswith(
+        "no reject set is stored by every database")
+    assert not win.run_btn.isEnabled() and "share a reject set" in win.hint.text()
+    choose(win.measure, "count")
+    assert "share a reject set" not in win.hint.text()
+    win.close()

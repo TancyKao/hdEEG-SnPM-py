@@ -97,7 +97,8 @@ none of its own.
 - TurtleWave reader (`io/turtlewave.py`) versus the MATLAB repository's `db_to_group_table.py`:
   a database older than TurtleWave 4.3 has no density in the reader, while the bridge divides by
   hypnogram time when given `--allow-hypnogram-denominator`; the reader names a subject by the
-  ID stored in the database when there is one, the bridge by the folder name; the reader writes
+  ID stored in the database when there is one (by the folder when that ID is the folder subject
+  plus the session), the bridge by the folder name; the reader writes
   the channels of the band asked for, the bridge every channel seen in any band; a recording in
   which the band was never detected is an error in the reader and an empty row (with a
   warning) in the bridge. Explained in `docs/how-to/read-turtlewave-databases.md`.

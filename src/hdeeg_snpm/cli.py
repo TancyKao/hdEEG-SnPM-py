@@ -38,7 +38,7 @@ def load_config(path) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="snpm", description="Permutation statistics for "
                                      "high-density EEG scalp maps.")
-    parser.add_argument("--version", action="version", version=f"hdeeg-snpm {__version__}")
+    parser.add_argument("--version", action="version", version=f"hdEEG-SnPM {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="run the analysis described in a TOML file")
     run.add_argument("config")
