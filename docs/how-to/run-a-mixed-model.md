@@ -256,8 +256,10 @@ for this analysis:
   p-value (two-sided for t).
 - **Correction.** TFCE with the largest enhanced value over channels as the null, and a cluster
   test on channels with model p < 0.05 whose statistic is the cluster **mass**: the sum of the
-  Wald statistic (t² or F) over the cluster divided by the number of channels in it, the
-  recipe of Stephan et al. (2021). The two corrections draw their own permutations, as in
+  Wald statistic (t² or F) over the cluster. With `cluster_statistic = "mean"` the sum is
+  divided by the number of channels in the cluster, the recipe of Stephan et al. (2021) and
+  the only rule before version 0.8.0; the mean ignores how many channels a cluster spans, so a
+  broad, moderate effect loses to single-channel maxima of the null. The two corrections draw their own permutations, as in
   MATLAB. The test is two-sided only: `tail` must be `both` (anything else is refused before the
   fit), and clusters are formed on the two-sided model p.
 - **Whole-head test.** The same model fitted once to the power averaged over the tested

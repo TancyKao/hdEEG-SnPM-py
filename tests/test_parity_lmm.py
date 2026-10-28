@@ -113,7 +113,7 @@ def test_correction_from_matlab_permuted_maps_is_exact(case):
     clusters, mass = lmm.cluster_correction(
         L["p_uncorrected"], L["wald"],
         zip(np.asarray(L["perm_cluster_p"]), np.asarray(L["perm_cluster_wald"])), g, ev,
-        float(L["alpha"]))
+        float(L["alpha"]), pu.cluster_statistic(fx))
     pu.assert_close(mass, L["cluster_mass_null_sorted"], pu.NULL_RTOL, f"{case} mass null")
     mine = sorted((tuple(sorted(c.channels.tolist())), c.p) for c in clusters)
     ref = []
@@ -224,6 +224,7 @@ def _implied_theta(s, k, model, value, squared, theta_py):
 
 def _params(fx):
     params = {k: (list(v) if isinstance(v, np.ndarray) else v) for k, v in fx["params"].items()}
+    params["cluster_statistic"] = pu.cluster_statistic(fx)
     if not Path(params["data_file"]).exists():
         pytest.skip(f"{params['data_file']} is absent (MATLAB repository not on this machine)")
     return params

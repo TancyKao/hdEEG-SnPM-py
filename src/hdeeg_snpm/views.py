@@ -19,7 +19,8 @@ class ClusterView:
     number: int                 # 1, 2, ... in table order; the same number is drawn on the map
     channels: np.ndarray        # 0-based, analysed order
     labels: list[str]
-    statistic: float            # number of channels (size) or summed Wald / n_channels (mass)
+    statistic: float            # number of channels (size), or summed Wald (mass; divided by
+                                # the number of channels when cluster_rule is 'mean')
     p: float
     direction: str = ""         # 'positive' / 'negative' for signed two-sided tests
 
@@ -57,6 +58,7 @@ class EffectView:
     circular: dict | None = None          # circular tier: import, gate, descriptive panel, ...
     mixed_model: dict | None = None       # mixed-model tier: formula, scheme, rows dropped, ...
     arrays: dict = field(default_factory=dict)   # extra per-channel arrays for the results file
+    cluster_rule: str = ""                # how a mass is scored: 'sum' or 'mean' ('' for size)
 
     def excluded_by_reason(self) -> list[tuple[str, list[int]]]:
         """(reason, channel indices) in order of first appearance."""
@@ -123,7 +125,7 @@ def _glm_view(loop, labels, alpha) -> EffectView:
         key=loop.role.replace("/posthoc:", "__").replace(" ", "_"),
         title=role[1] if len(role) > 1 else f"{role[0]}: {loop.design.effect_label}",
         stat_name=name, stat=r.real_T, p_uncorrected=r.p_real, tfce=r.real_TFCE,
-        p_tfce=r.p_correctedTFCE, cluster_statistic="mass",
+        p_tfce=r.p_correctedTFCE, cluster_statistic="mass", cluster_rule=r.cluster_statistic,
         cluster_threshold=f"uncorrected p < {alpha:g}", clusters=_number(clusters),
         n_permutations=r.n_perm, excluded=r.excluded_channels,
         excluded_reasons=list(r.excluded_reasons),
@@ -166,18 +168,20 @@ def _plain(v):
 
 def _circ_view(res) -> EffectView:
     from .circ import mean_direction_deg
-    from .circ_pipeline import CLUSTER_STATISTIC, STAT_LABELS, effect_label, exclusion_reason
+    from .circ_pipeline import STAT_LABELS, effect_label, exclusion_reason
+    from .cluster_stat import circ_recorded
 
     prep, r, labels = res.prepared, res.result, res.setup.labels
+    rule = res.cluster_statistic
     name = "U2" if prep.comparison == "circ_phase_group_u2" else "F"
     clusters = [ClusterView(0, c.channels, [labels[i] for i in c.channels], float(c.mass), c.p)
                 for c in r.clusters if c.channels.size]
     imp = prep.imp
     methods = (_CIRC_METHODS[prep.comparison] + ", in two ways: threshold-free cluster "
                "enhancement (TFCE) with the maximum enhanced value over channels as the null, and "
-               "a cluster test whose statistic is the cluster mass (sum of the statistic over the "
-               "cluster divided by the number of channels; FieldTrip's maxsize, used by Helfrich "
-               f"et al., differs). Angles were declared in {imp['units']} with zero convention "
+               f"a cluster test whose statistic is the cluster mass ({circ_recorded(rule)}; "
+               "FieldTrip's maxsize, used by Helfrich et al., differs). "
+               f"Angles were declared in {imp['units']} with zero convention "
                f"{imp['convention']}; a rotation of {imp['rotation_deg']:+.1f} deg was applied so "
                "that 0 is the slow-oscillation up-state peak. "
                + ("A channel is tested only with at least 8 subjects per group, a count not "
@@ -194,7 +198,8 @@ def _circ_view(res) -> EffectView:
         "statistic_label": STAT_LABELS[prep.comparison], "effect_label": effect_label(prep),
         "import": imp, "rotation_deg": imp["rotation_deg"], "convention": imp["convention"],
         "units": imp["units"], "covariate": cov, "gate_min_per_group": 8,
-        "cluster_statistic": CLUSTER_STATISTIC, "exclusion_reason": exclusion_reason(prep.comparison),
+        "cluster_statistic": circ_recorded(rule), "cluster_statistic_rule": rule,
+        "exclusion_reason": exclusion_reason(prep.comparison),
         "n_group1": prep.n1g, "n_group2": prep.n2g, "measure_col": prep.measure_col,
         **({} if prep.is_group else {"measure_nan_removed": prep.measure_nan_removed,
                                      "dropped_subjects": list(prep.dropped_subjects)}),
@@ -215,7 +220,8 @@ def _circ_view(res) -> EffectView:
     return EffectView(
         key="main", title=f"{prep.comparison}: {STAT_LABELS[prep.comparison]}", stat_name=name,
         stat=r.real_T, p_uncorrected=r.p_real, tfce=r.real_TFCE, p_tfce=r.p_correctedTFCE,
-        cluster_statistic="mass", cluster_threshold=f"uncorrected p < {res.alpha:g}",
+        cluster_statistic="mass", cluster_rule=rule,
+        cluster_threshold=f"uncorrected p < {res.alpha:g}",
         clusters=_number(clusters), n_permutations=r.n_perm, excluded=prep.excluded,
         excluded_reasons=list(prep.excluded_reasons), global_text="", global_n_channels=0,
         n_analysed=prep.per_channel_n, n_available=np.isfinite(prep.A_imported).sum(axis=0),
@@ -223,10 +229,11 @@ def _circ_view(res) -> EffectView:
 
 
 def _lmm_view(res) -> EffectView:
+    from .cluster_stat import card_value, rule_text
     from .lmm import dropped_text
-    from .lmm_pipeline import CLUSTER_STATISTIC
 
     spec, labels, T = res.spec, res.setup.labels, res.T
+    rule = res.clusters.cluster_statistic
     name = "F" if spec.effect_type == "factor" else "t"
     clusters = [ClusterView(0, c.channels, [labels[i] for i in c.channels], float(c.mass), c.p)
                 for c in res.clusters.clusters if c.channels.size]
@@ -243,7 +250,7 @@ def _lmm_view(res) -> EffectView:
         f"permutation, with {scheme}, in two ways, each with its own permutations: threshold-"
         "free cluster enhancement (TFCE) with the maximum enhanced value over channels as the "
         f"null, and a cluster test on channels with model p < {res.alpha:g} whose statistic is "
-        f"the {CLUSTER_STATISTIC}. A channel is tested only if it is complete across every "
+        f"the cluster mass, the {rule_text(rule)}. A channel is tested only if it is complete across every "
         "analysed row; that set is fixed before the first permutation.")
     d = res.dropped
     mixed = _plain({
@@ -253,7 +260,7 @@ def _lmm_view(res) -> EffectView:
         "subject_col": spec.subject, "group_col": spec.group, "coef_names": res.model_names,
         "n_trials": res.n_trials, "n_subjects": res.n_subjects,
         "dropped_rows": d.as_dict(), "dropped_text": dropped_text(d),
-        "cluster_statistic": CLUSTER_STATISTIC,
+        "cluster_statistic": card_value(rule), "cluster_statistic_rule": rule,
         "n_degenerate_permutations": T.n_degenerate, "df": T.fit.df,
         "fit": "maximum likelihood, closed form in the variance ratio (exact optimum)"})
     df = f"{T.fit.df:g}" if name == "t" else f"{len(lmm_effect_cols(res))}, {T.fit.df:g}"
@@ -262,7 +269,7 @@ def _lmm_view(res) -> EffectView:
     return EffectView(
         key="main", title=f"Mixed model: {spec.effect} ({spec.effect_type})", stat_name=name,
         stat=T.real_T, p_uncorrected=T.p_real, tfce=T.real_TFCE, p_tfce=T.p_correctedTFCE,
-        cluster_statistic="mass", cluster_threshold=f"model p < {res.alpha:g}",
+        cluster_statistic="mass", cluster_rule=rule, cluster_threshold=f"model p < {res.alpha:g}",
         clusters=_number(clusters), n_permutations=T.n_perm, excluded=res.excluded,
         excluded_reasons=list(res.excluded_reasons), global_text=gtext, global_stat=res.global_stat,
         global_p=res.global_p, global_reason="" if np.isfinite(res.global_stat) else "fit failed",

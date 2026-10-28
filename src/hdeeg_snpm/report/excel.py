@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..cluster_stat import SETTINGS_COLUMNS
+
 SHEETS = ("statVal", "pVal_or_pCritVal", "pValTFCE", "effectiveN", "excludedChannels",
           "uncorrectsigch", "correctTFCEsigch", "correctSnPMsigch")
 
@@ -81,3 +83,6 @@ def write_workbook(path, views, labels, alpha):
             for name, frame in sheets_for(v, labels, alpha).items():
                 frame.to_excel(xl, sheet_name=(name if i == 0 else f"{i + 1}_{name}")[:31],
                                index=False)
+        if flat[0].cluster_rule:      # GLM, circular, mixed model: the cluster-mass rule
+            pd.DataFrame([dict(zip(SETTINGS_COLUMNS, (flat[0].cluster_rule, alpha)))]).to_excel(
+                xl, sheet_name="settings", index=False)

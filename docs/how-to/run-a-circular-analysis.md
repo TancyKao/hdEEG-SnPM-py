@@ -169,8 +169,9 @@ this tier:
   has a descriptive panel per group: mean direction, circular standard deviation, resultant
   length R and the Rayleigh test, pooled over the tested channels. It carries no inference.
 - **Correction.** TFCE (step 0.1, or 0.005 for U², whose values are small) and a cluster test
-  whose statistic is the cluster **mass**: the sum of the statistic over the cluster divided by
-  the number of channels. Clusters form from channels with uncorrected parametric p < 0.05.
+  whose statistic is the cluster **mass**: the sum of the statistic over the cluster
+  (`cluster_statistic = "sum"`, the default), or that sum divided by the number of channels
+  (`"mean"`, the rule before version 0.8.0). Clusters form from channels with uncorrected parametric p < 0.05.
   FieldTrip's `maxsize`, used in some published phase studies, is a different statistic; the
   report says so.
 - **`.json`**, under `effects[0].circular`: the import record (units, convention, rotation

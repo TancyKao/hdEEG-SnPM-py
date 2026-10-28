@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from . import cluster_stat
 from . import perm as _perm
 from .clusters import ChannelGraph, find_clusters
 from .legacy import ZERO_SS_RTOL, _at_least, _fwe_p, _sort_desc
@@ -490,6 +491,7 @@ class CorrectionResult:
     n_perm: int
     perms: np.ndarray | None = field(default=None, repr=False)
     excluded_reasons: list[str] = field(default_factory=list)   # one per excluded channel
+    cluster_statistic: str = cluster_stat.DEFAULT                  # 'sum' or 'mean'
 
     @property
     def excluded_mask(self) -> np.ndarray:
@@ -498,18 +500,22 @@ class CorrectionResult:
         return m
 
 
-def _p_clusters(p_model, wald, alpha, graph):
-    """Connected channels with model p < alpha; mass = sum(Wald) / n_channels."""
+def _p_clusters(p_model, wald, alpha, graph, rule=cluster_stat.DEFAULT):
+    """Connected channels with model p < alpha, each scored by ``cluster_stat.score``: the sum
+    of the Wald statistic over the cluster, divided by the number of channels under 'mean'."""
     with np.errstate(invalid="ignore"):
         mask = (p_model < alpha).astype(float)
-    return [(c, np.nansum(wald[c]) / c.size) for c in find_clusters(mask, 0.5, graph)]
+    return [(c, cluster_stat.score(wald, c, rule)) for c in find_clusters(mask, 0.5, graph)]
 
 
 def perm_correction(real_stat, real_p, perm_stat_fn, graph: ChannelGraph, n_perm: int,
                     contrast_type: str, evaluable=None, alpha: float = 0.05, E: float = 0.5,
                     H: float = 2.0, dh: float = 0.1, undefined=None,
-                    reasons=None) -> CorrectionResult:
+                    reasons=None, cluster_statistic: str = cluster_stat.DEFAULT
+                    ) -> CorrectionResult:
     """TFCE max-statistic null and cluster-mass null from one permutation loop.
+
+    ``cluster_statistic`` ('sum' or 'mean') is how a cluster is scored; TFCE does not use it.
 
     ``perm_stat_fn(i)`` returns ``(stat, p)`` for permutation ``i``. Channels outside
     ``evaluable`` are NaN in the observed map and in every permuted map. Channels in
@@ -518,6 +524,7 @@ def perm_correction(real_stat, real_p, perm_stat_fn, graph: ChannelGraph, n_perm
     channel outside ``evaluable`` was left out (default: missing data).
     """
     is_f = contrast_type.upper() == "F"
+    rule = cluster_stat.resolve(cluster_statistic)
     real_stat = np.array(real_stat, dtype=float)
     real_p = np.array(real_p, dtype=float)
     evaluable = (np.ones(graph.n, bool) if evaluable is None else np.asarray(evaluable, bool))
@@ -532,7 +539,7 @@ def perm_correction(real_stat, real_p, perm_stat_fn, graph: ChannelGraph, n_perm
         return s if is_f else s ** 2
 
     real_tfce = tfce(real_stat, graph, E, H, dh)
-    real_clusters = _p_clusters(real_p, wald(real_stat), alpha, graph)
+    real_clusters = _p_clusters(real_p, wald(real_stat), alpha, graph, rule)
     max_tfce = np.zeros(n_perm)
     max_mass = np.zeros(n_perm)
     for i in range(n_perm):
@@ -543,7 +550,7 @@ def perm_correction(real_stat, real_p, perm_stat_fn, graph: ChannelGraph, n_perm
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             max_tfce[i] = np.nanmax(enhanced if is_f else np.abs(enhanced))
-        found = _p_clusters(pp, wald(s), alpha, graph)
+        found = _p_clusters(pp, wald(s), alpha, graph, rule)
         if found:
             max_mass[i] = max(m for _, m in found)
     max_tfce = _sort_desc(max_tfce)
@@ -560,6 +567,7 @@ def perm_correction(real_stat, real_p, perm_stat_fn, graph: ChannelGraph, n_perm
         critical_T_TFCE=max_tfce[int(np.floor(alpha * n_perm))], p_real=real_p,
         p_correctedTFCE=p_tfce, clusters=clusters,
         excluded_channels=np.flatnonzero(~evaluable | undefined), n_perm=n_perm,
+        cluster_statistic=rule,
         excluded_reasons=[PERFECT_FIT if undefined[i] else
                           (MISSING if reasons is None else str(reasons[i]))
                           for i in np.flatnonzero(~evaluable | undefined)])
@@ -567,7 +575,8 @@ def perm_correction(real_stat, real_p, perm_stat_fn, graph: ChannelGraph, n_perm
 
 def run_effect(Y, design: Design, graph: ChannelGraph, n_perm: int = 5000, C=None,
                 rng: np.random.Generator | None = None, perms=None, alpha: float = 0.05,
-                E: float = 0.5, H: float = 2.0, ctx: FLContext | None = None) -> CorrectionResult:
+                E: float = 0.5, H: float = 2.0, ctx: FLContext | None = None,
+                cluster_statistic: str = cluster_stat.DEFAULT) -> CorrectionResult:
     """Observed map plus Freedman-Lane permutation correction for one contrast.
 
     ``C`` defaults to the design's own contrast. ``perms`` is an (n_perm, n_obs) row-index matrix used in place of a draw.
@@ -590,7 +599,8 @@ def run_effect(Y, design: Design, graph: ChannelGraph, n_perm: int = 5000, C=Non
     out = perm_correction(stat, p, perm_stat, graph, perms.shape[0],
                           "t" if C.shape[0] == 1 else "F", ctx.evaluable, alpha, E, H,
                           undefined=undefined,
-                          reasons=np.where(novar, NO_VARIATION, MISSING).astype(object))
+                          reasons=np.where(novar, NO_VARIATION, MISSING).astype(object),
+                          cluster_statistic=cluster_statistic)
     out.perms = perms
     return out
 
@@ -800,9 +810,12 @@ def plan_preset(preset: str, Y, meta: pd.DataFrame, **cols) -> list[Loop]:
 
 def run_preset(preset: str, Y, meta: pd.DataFrame, graph: ChannelGraph, n_perm: int = 5000,
                rng: np.random.Generator | None = None, perms=None, alpha: float = 0.05,
-               E: float = 0.5, H: float = 2.0, **cols) -> list[Loop]:
-    """Run every loop of a preset. ``perms`` is one row-index matrix per loop, in plan order;
-    without it each loop draws fresh indices from ``rng``."""
+               E: float = 0.5, H: float = 2.0, cluster_statistic: str = cluster_stat.DEFAULT,
+               **cols) -> list[Loop]:
+    """Run every loop of a preset (main effect, post-hoc pairs, mixed2way effects and simple
+    effects), each scoring clusters by ``cluster_statistic``. ``perms`` is one row-index matrix
+    per loop, in plan order; without it each loop draws fresh indices from ``rng``."""
+    cluster_statistic = cluster_stat.resolve(cluster_statistic)
     loops = plan_preset(preset, Y, meta, **cols)
     if perms is not None and len(perms) != len(loops):
         raise ValueError(f"{len(loops)} permutation loops but {len(perms)} index matrices")
@@ -812,5 +825,6 @@ def run_preset(preset: str, Y, meta: pd.DataFrame, graph: ChannelGraph, n_perm: 
         if loop.mask is not None:
             ctx = replace(ctx, evaluable=ctx.evaluable & loop.mask)
         loop.result = run_effect(loop.Y, loop.design, graph, n_perm, loop.C, rng,
-                                 None if perms is None else perms[k], alpha, E, H, ctx)
+                                 None if perms is None else perms[k], alpha, E, H, ctx,
+                                 cluster_statistic)
     return loops

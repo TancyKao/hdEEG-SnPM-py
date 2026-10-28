@@ -6,8 +6,9 @@ from datetime import datetime
 
 import numpy as np
 from jinja2 import Environment, PackageLoader, select_autoescape
+from markupsafe import Markup
 
-from .. import __version__
+from .. import __version__, cluster_stat
 from ..io.turtlewave import reject_label
 from ..legacy import COMPARISONS as LEGACY_COMPARISONS
 from .topoplot import data_uri, effect_figure
@@ -37,6 +38,18 @@ def _methods(view) -> str:
     return text
 
 
+def _cluster_note(view) -> Markup:
+    """The sentence under a cluster view saying how a cluster is scored. The mass wordings are
+    MATLAB's (``cluster_stat``) and follow the rule ('sum' or 'mean')."""
+    if view.cluster_statistic == "size":
+        return Markup("The cluster statistic is the cluster <strong>size</strong> (number of "
+                      "channels).")
+    rule = view.cluster_rule or cluster_stat.DEFAULT
+    if view.circular:
+        return Markup(cluster_stat.CIRC_NOTICE[rule])
+    return Markup.escape(cluster_stat.results_line(rule) + ".")
+
+
 def _skipped_name(pair: str) -> str:
     """A skipped mixed2way simple effect names itself; anything else is a post-hoc pair."""
     return pair[0].upper() + pair[1:] if pair.startswith("simple effect") else f"Post-hoc {pair}"
@@ -56,14 +69,7 @@ def _effect_context(view, setup, alpha):
         "excluded_labels": [labels[i] for i in view.excluded],
         "excluded_groups": [(r, [labels[i] for i in idx]) for r, idx in view.excluded_by_reason()],
         "global_text": view.global_text, "global_n_channels": view.global_n_channels,
-        "cluster_note": ("(number of channels)" if view.cluster_statistic == "size" else
-                         "(the mean Wald: sum of t² for a continuous effect, or of F for a "
-                         "factor, over the cluster, divided by the number of channels)"
-                         if view.mixed_model else
-                         "(sum of F or t² over the cluster, divided by the number of channels)"
-                         if view.stat_name in ("F", "t") and not view.circular else
-                         f"(sum of {view.stat_name} over the cluster, divided by the number of "
-                         "channels)"),
+        "cluster_note": _cluster_note(view),
         "descriptive": (view.circular or {}).get("descriptive"),
         "mixed_model": view.mixed_model,
         "peak": "n/a" if peak is None else f"{abs(view.stat[peak]):.3f}",
@@ -133,18 +139,25 @@ def render(views, setup, params, alpha, seed, notes=(), title=None, source=None)
              "circ_zero_offset_deg", "measure_col", "group_col", "condition_col", "subject_col",
              "predictor_col", "covariate_cols", "lmm_dv", "lmm_fixed", "lmm_random",
              "lmm_effect", "lmm_effect_type", "lmm_perm", "lmm_subject", "lmm_group")
+    settings = [(k, params[k]) for k in shown if params.get(k) not in (None, "", [])]
+    if views[0].cluster_rule:         # the rule in force, shown even when left at the default
+        settings.append(("cluster_statistic", cluster_stat.card_value(
+            views[0].cluster_rule,
+            cluster_stat.CIRC_WHAT if views[0].circular else cluster_stat.GLM_WHAT)))
     return env.get_template("report.html.j2").render(
         title=title or f"hdEEG-SnPM report: {params['comparison']}",
         created=datetime.now().strftime("%Y-%m-%d %H:%M"), montage=setup.system_key,
         n_channels=len(setup.labels), methods=_methods(views[0]),
-        settings=[(k, params[k]) for k in shown if params.get(k) not in (None, "", [])],
+        settings=settings,
         source=_source_rows(source),
         tail_note=("Left tail: the statistic shown is Data 2 minus Data 1, so the tested "
                    "direction (Data 1 below Data 2) appears as positive values."
                    if params.get("tail") == "left" else ""),
         mixed=params["comparison"].lower() == "mixed2way",
         # skipped pairs and left-out subjects are stated under their own effect
-        notes=[n for n in notes if not n.startswith(("Post-hoc ", "Simple effect "))], alpha=f"{alpha:g}", seed=seed, version=__version__,
+        # the cluster rule is stated under each cluster view instead
+        notes=[n for n in notes if not n.startswith(("Post-hoc ", "Simple effect ",
+                                                     "Cluster statistic: "))], alpha=f"{alpha:g}", seed=seed, version=__version__,
         permutations_text=f"{' / '.join(str(n) for n in n_perm)} permutations per test.",
         p_text=_p_text(params["comparison"]),
         tfce_dh=f"{views[0].tfce_dh:g}",

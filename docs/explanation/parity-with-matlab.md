@@ -220,8 +220,12 @@ cell is a missing cell), so they are no longer differences.
 - The cluster-forming threshold for a correlation is chosen from the number of matched subjects
   before any subject with a missing covariate is dropped.
 - The cluster-forming threshold of a one-tailed t-test is the two-sided critical t.
-- The cluster statistic of the group designs is the sum of F (or t squared) over the cluster
-  divided by the number of channels in the cluster.
+- The cluster statistic of the group designs, the circular analyses and the mixed model is the
+  sum of F (or t squared) over the cluster by default, or that sum divided by the number of
+  channels in the cluster with `cluster_statistic = "mean"`, the only rule before version 0.8.0.
+  Both languages take the same key and refuse any other value. The parity tests replay each
+  reference file with the rule MATLAB recorded in it (`results.cluster_statistic`); a file
+  without that field predates the option and is replayed with `mean`.
 - `normalize` z-scores across the selected scalp channels in the t-test and correlation
   analyses, and across every data column in the group designs.
 
@@ -301,6 +305,18 @@ size is 0.036 to 0.064. The run of 16 October 2026 on the current code,
     python tools/fwe_simulation.py --sims 1000 --perms 199 --workers 6
 
 is in [fwe_2026-10-16.csv](fwe_2026-10-16.csv).
+
+Every cluster rate of the group designs, the circular tier and the mixed model in this section
+was measured before version 0.8.0, with the cluster mass divided by the number of channels
+(what `cluster_statistic = "mean"` still gives). The default is now the plain sum. A
+permutation test is exact for any statistic computed the same way on the observed and on every
+permuted map, and the threshold and the permutations are unchanged, so the change moves power,
+not the false-positive rate. A rerun under the sum (400 null simulations, 199 permutations, for
+anova1, ancova, regression, rmanova, the three mixed2way effects, the anova1 and rmanova
+post-hoc pairs, circ_phase_group, circ_phase_group_u2, circ_corrAngLinear and both mixed-model
+effects) gave cluster rates from 0.030 to 0.0625, all inside the acceptance band 0.0286 to
+0.0714. The run is in [fwe_2026-10-28_sum.csv](fwe_2026-10-28_sum.csv). TFCE rates are
+unaffected.
 
 | Analysis | TFCE | Cluster |
 |---|---|---|

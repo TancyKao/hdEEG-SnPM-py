@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased (0.8.0)
+
+Changed:
+- New setting `cluster_statistic` = `"sum"` (default) or `"mean"` for every analysis that
+  scores a cluster by its mass: the group designs (`anova1`, `ancova`, `regression`, `rmanova`
+  with its post-hoc pairs, all three `mixed2way` effects and the simple effects), the circular
+  analyses and `mixedmodel`. Under `"sum"` a cluster's statistic is the sum of t² or F over its
+  channels, a summed-statistic cluster mass in the sense of Maris & Oostenveld (2007), taken
+  here on the Wald scale (t² or F); under `"mean"` that sum is divided by
+  the number of channels, the only rule up to 0.7.0. The mean ignores how far a cluster
+  extends, so a broad, moderate effect lost to single-channel maxima of the null.
+- **The default changed**: cluster p-values and cluster masses of the group designs, the
+  circular analyses and the mixed model differ from 0.7.0. Set `cluster_statistic = "mean"` to
+  reproduce a run made with an earlier version. The cluster-forming threshold (model p < 0.05),
+  the Wald scale, the permutations and TFCE are the same under both rules; TFCE maps and
+  p-values are identical. The t-tests and correlations keep scoring a cluster by its number of
+  channels.
+- Any value other than `sum` or `mean` is refused before a file is read
+  (`cluster_stat.BadClusterStatistic`, MATLAB `snpm:badClusterStatistic`).
+- The rule in force is recorded: `cluster_statistic_rule` on every effect and post-hoc pair in
+  the `.json`, a `cluster_statistic` row in the report's settings, a `settings` sheet
+  (`cluster_statistic`, `alpha`) in the workbook, and the wording of the report's cluster notes,
+  the circular and mixed-model methods text and the mixed-model sheet. Only `"mean"` says
+  "divided by the number of channels". The window does not show the setting; its runs use the
+  default.
+- MATLAB has the same setting and default (hdEEG-SnPM, same release).
+
 ## 0.7.0 (2026-10-27)
 
 Added:

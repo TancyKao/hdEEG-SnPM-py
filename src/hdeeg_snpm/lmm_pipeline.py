@@ -21,14 +21,11 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from . import lmm
+from . import cluster_stat, lmm
 from .io import tables
 from .montage import ChannelSetup, setup_channels
 
 COMPARISON = "mixedmodel"
-CLUSTER_STATISTIC = ("cluster mass = sum of the Wald statistic (t² for a continuous effect, F "
-                     "for a factor) over the cluster divided by the number of channels, i.e. the "
-                     "mean Wald (Stephan et al. 2021)")
 
 
 @dataclass
@@ -218,6 +215,7 @@ def run_lmm(params: dict, rng: np.random.Generator | None = None, perms_tfce=Non
     """Run a mixed-model analysis end to end (no files are written here)."""
     from .pipeline import DEFAULT_PERMUTATIONS, TFCE_E, TFCE_H
 
+    rule = cluster_stat.resolve(params.get("cluster_statistic"))
     spec, meta, power, setup, ev, dropped, notes, reasons, w_ch = prepare(params)
     rng = rng if rng is not None else np.random.default_rng(params.get("seed"))
     n_perm = params.get("permutations", DEFAULT_PERMUTATIONS)
@@ -226,7 +224,8 @@ def run_lmm(params: dict, rng: np.random.Generator | None = None, perms_tfce=Non
                      None if perms_tfce is not None else n_perm, TFCE_E, TFCE_H, ev, rng,
                      perms_tfce)
     C = lmm.lmm_cluster(power, meta, spec, setup.graph, alpha,
-                        None if perms_cluster is not None else n_perm, ev, rng, perms_cluster)
+                        None if perms_cluster is not None else n_perm, ev, rng, perms_cluster,
+                        cluster_statistic=rule)
     model = lmm.LMM(meta, spec)
     gstat, gp = global_test(meta, power, spec, ev)
     # observed fits caught by the per-labelling backstop: NaN in the map, listed
@@ -236,6 +235,7 @@ def run_lmm(params: dict, rng: np.random.Generator | None = None, perms_tfce=Non
     if excluded.size:
         notes.append(excluded_text(spec, setup.labels, excluded, [reasons[i] for i in excluded],
                                    ev.size))
+    notes.append(cluster_stat.results_line(rule))                # MATLAB's results-text line
     if T.n_degenerate:
         notes.append(f"{T.n_degenerate} of {T.n_perm} permutations produced no finite statistic "
                      "on any evaluable channel; those null entries were set to +Inf "

@@ -11,6 +11,7 @@ The same keys are used in a TOML file for `snpm run` and in the dictionary passe
 | `datatype` | `absolute`, `logscale`, `normalize` | `absolute` | no transform, log10, or z-score across channels within each subject |
 | `permutations` | whole number, at least 20 | 5000 | permutations per test. When the number of possible relabellings is no larger than this, all of them are enumerated instead of drawn at random |
 | `seed` | whole number | drawn and recorded | seed of the random generator |
+| `cluster_statistic` | `sum`, `mean` | `sum` | how a cluster is scored in the group designs, the circular analyses and `mixedmodel`: the sum of the Wald statistic (t² or F) over the cluster, or that sum divided by the number of channels (`mean`, the only rule before version 0.8.0; set it to reproduce older runs). The cluster-forming threshold, the permutations and TFCE are the same under both. Anything else is refused (`badClusterStatistic`). The t-tests and correlations score a cluster by its number of channels and ignore this key. The window does not show it, so a run from the window uses `sum` |
 | `output_path` | folder | `snpm_output` beside the TOML file | where files are written |
 | `data1_file`, `data2_file` | path | | the two files of a t-test or correlation |
 | `data1_sheet`, `data2_sheet`, `data_sheet` | sheet name | first sheet | for Excel files |

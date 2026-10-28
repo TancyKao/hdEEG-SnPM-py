@@ -10,7 +10,9 @@ ending in `_tables`, so later runs into the same `output_path` do not overwrite 
 Parameters, seed, package version, recording system and channel list, notes and warnings, and
 for each effect: the whole-head test, the channels not tested and why, the significant channels
 (uncorrected, TFCE-corrected, in significant clusters), and every cluster with its number,
-members, statistic and corrected p-value. Post-hoc contrasts sit under the effect they follow.
+members, statistic and corrected p-value. `cluster_statistic` is `size` (t-tests, correlations)
+or `mass`; a mass effect also has `cluster_statistic_rule`, `sum` or `mean`. Post-hoc contrasts
+sit under the effect they follow.
 The circular analyses have no whole-head test (its fields are empty) and add a `circular`
 block: the angle import and rotation applied, the event-count covariate report, the inversion
 check, group sizes, subjects analysed and dropped, the permutation type and the descriptive
@@ -63,7 +65,9 @@ with several effects add the same sheets with a number prefix and a `contents` s
 `droppedRows` (as MATLAB: a summary line, then the number of rows missing each model variable)
 and `mixedModel`, an item and value list that MATLAB does not write: formula, random structure,
 effect, statistic, residual degrees of freedom, permutation scheme, trials and subjects analysed,
-cluster statistic and whole-head test.
+cluster statistic and whole-head test. The group designs, the circular analyses and the mixed
+model end with a one-row `settings` sheet, as MATLAB does: `cluster_statistic` (`sum` or `mean`)
+and `alpha`.
 
 ## `_report.html`
 

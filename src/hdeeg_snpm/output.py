@@ -52,6 +52,7 @@ def results_summary(views, setup, params, alpha, seed, notes, source=None) -> di
             "significant_channels": {name: [setup.labels[i] for i in idx]
                                      for name, idx in sig.items()},
             "cluster_statistic": v.cluster_statistic, "cluster_threshold": v.cluster_threshold,
+            **({"cluster_statistic_rule": v.cluster_rule} if v.cluster_rule else {}),
             "clusters": [{"number": c.number, "channels": c.labels, "statistic": c.statistic,
                           "p": c.p, "direction": c.direction} for c in v.clusters],
             "posthoc": [one(p) for p in v.posthoc],

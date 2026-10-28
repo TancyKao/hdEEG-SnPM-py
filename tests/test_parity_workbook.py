@@ -153,6 +153,10 @@ def _check_sig(py_rows, expected, labels, name, what):
         assert got == expected, what
 
 
+def res_alpha(fx):
+    return float(fx["results"]["alpha"])
+
+
 def _ref_index(r, field):
     return [] if not np.size(r[field]) else (pu.index0(r[field]) + 1).tolist()
 
@@ -170,7 +174,17 @@ def test_workbook_matches_matlab(case, tmp_path):
     res = fx["results"]
     ours = {n[len(prefix):] for n in py if n.startswith(prefix)} if prefix else \
         {n for n in py if not n[0].isdigit() and n != "contents"}
-    assert ours == set(ml) - {"posthoc"}, "sheet names"
+    assert ours - {"settings"} == set(ml) - {"posthoc", "settings"}, "sheet names"
+
+    # the cluster-mass rule: Python always writes it for the GLM tier; MATLAB workbooks built
+    # before the option have no settings sheet
+    if fx["tier"] != "legacy":
+        assert py["settings"] == [["cluster_statistic", "alpha"],
+                                  [pu.cluster_statistic(fx), res_alpha(fx)]], "settings"
+        if "settings" in ml:
+            assert ml["settings"] == py["settings"], "settings sheet"
+    else:
+        assert "settings" not in py
 
     for name, (grp, field) in MAP_SHEETS.items():
         m, p = ml[name], py[prefix + name]

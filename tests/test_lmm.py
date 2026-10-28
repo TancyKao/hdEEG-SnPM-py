@@ -231,7 +231,7 @@ def test_planted_continuous_cluster_is_recovered(egi_graph):
     c = lmm.lmm_cluster(power, meta, spec, egi_graph, n_perm=99, rng=rng)
     best = min(c.clusters, key=lambda k: k.p)
     assert best.p < 0.05 and len(set(cl) - set(best.channels.tolist())) <= 1
-    assert best.mass == pytest.approx(t.fit.wald[best.channels].sum() / best.channels.size)
+    assert best.mass == pytest.approx(t.fit.wald[best.channels].sum())   # default 'sum' 
 
 
 def test_group_effect_needs_the_group_label_scheme(egi_graph):
@@ -426,7 +426,9 @@ def test_mixedmodel_runs_through_the_pipeline_and_writes_its_files(egi_graph, tm
     assert np.isfinite(e["global"]["statistic"]) and e["global"]["n_channels"] == egi_graph.n - 1
     assert set(e["significant_channels"]["tfce"]) & {get_montage("egi").labels[i] for i in cl}
     html_text = paths["html"].read_text()
-    assert "mean Wald" in html_text and "within_subject" in html_text
+    assert "Cluster statistic: sum of t² (or F) over the cluster." in html_text
+    assert "within_subject" in html_text
+    assert "divided by the number of channels" not in html_text
     assert "random intercept per Subject" in html_text
     sheets = pd.read_excel(paths["xlsx"], sheet_name=None)
     assert {"statVal", "excludedChannels", "mixedModel", "droppedRows"} <= set(sheets)

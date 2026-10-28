@@ -9,16 +9,35 @@ import scipy.io as sio
 from hdeeg_snpm.clusters import ChannelGraph
 
 FIXTURES = Path(__file__).parent.parent / "parity_fixtures"
+# the fixtures as they were before the cluster-statistic option (all built with the mean);
+# copied by hand before the re-export, git-ignored, present only on the maintainer's machine
+PRE_SUMMASS = Path(__file__).parent.parent / "_scratch" / "parity_fixtures_pre_summass"
 
 STAT_RTOL = 1e-10
 NULL_RTOL = 1e-9
 
 
-def load(name: str) -> dict:
-    path = FIXTURES / f"{name}.mat"
+def load(name: str, root: Path = FIXTURES) -> dict:
+    path = root / f"{name}.mat"
     if not path.exists():
         pytest.skip(f"{path} is absent (built by scripts/export_parity_fixtures.m in MATLAB)")
     return sio.loadmat(path, simplify_cells=True)
+
+
+def cluster_statistic(fx: dict) -> str:
+    """The cluster-mass rule ('sum' or 'mean') MATLAB used for this fixture.
+
+    MATLAB records it as ``results.cluster_statistic`` (and in ``params`` when it was set). A
+    fixture without either predates the option, when every cluster mass was the mean, so it
+    is replayed with 'mean'. Any other recorded value is an error, not a silent default.
+    """
+    for where in (fx.get("results"), fx.get("params")):
+        value = where.get("cluster_statistic") if isinstance(where, dict) else None
+        if isinstance(value, str) and value:      # an empty MATLAB char loads as an array
+            rule = value.lower()
+            assert rule in ("sum", "mean"), f"fixture records cluster_statistic {rule!r}"
+            return rule
+    return "mean"
 
 
 def as_list(x) -> list:

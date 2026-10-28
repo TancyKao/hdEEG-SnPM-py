@@ -9,7 +9,7 @@ The MATLAB toolbox is the reference: an analysis here counts as validated only o
 the MATLAB statistic maps and corrected p-values on shared inputs using the same permutation
 indices.
 
-**Status: v0.7.0, beta. It reproduces the MATLAB toolbox on the parity fixtures (phases 1 to 3); the MATLAB toolbox stays the reference. Changes: [CHANGELOG.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/CHANGELOG.md).**
+**Status: v0.8.0, beta. It reproduces the MATLAB toolbox on the parity fixtures (phases 1 to 3); the MATLAB toolbox stays the reference. Changes: [CHANGELOG.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/CHANGELOG.md).**
 
 | Piece | State |
 |---|---|
@@ -23,6 +23,13 @@ indices.
 | Mixed linear model (`mixedmodel`), random intercept `(1\|Subject)` only | ported in phase 3 (v0.3.0); agrees with MATLAB on 6 reference runs within the fit tolerances (except a few permuted fits where MATLAB's optimiser stops short), correction exact |
 | Window (`snpm gui`) for TurtleWave databases or a CSV/Excel table: t-tests, one-way ANOVA, ANCOVA, regression, correlations | written; MATLAB's App Designer GUI itself is not ported |
 | Spectral-power folders, other random structures | not ported |
+
+How a cluster is scored depends on the analysis:
+
+| Analyses | Cluster statistic |
+|---|---|
+| Paired, unpaired, one-sample t-tests; Pearson and Spearman correlations | extent: the number of channels in the cluster |
+| anova1, ancova, regression, rmanova (with post-hoc pairs), mixed2way (all effects, simple effects), circular analyses, `mixedmodel` | mass: the sum of t² or F over the cluster (`cluster_statistic = "sum"`, the default since 0.8.0), or that sum divided by the number of channels (`"mean"`, the rule before 0.8.0) |
 
 How agreement with MATLAB is checked, and where the two differ on purpose:
 [docs/explanation/parity-with-matlab.md](https://github.com/TancyKao/hdEEG-SnPM-py/blob/main/docs/explanation/parity-with-matlab.md).

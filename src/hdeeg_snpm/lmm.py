@@ -38,6 +38,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from . import cluster_stat
 from . import perm as _perm
 from .clusters import ChannelGraph, find_clusters
 from .legacy import ZERO_SS_RTOL, _at_least, _fwe_p, _sort_desc
@@ -1193,7 +1194,7 @@ def lmm_tfce(power, meta: pd.DataFrame, spec: LMMSpec, graph: ChannelGraph,
 @dataclass
 class LMMCluster:
     channels: np.ndarray   # 0-based; empty when no channel passed the threshold
-    mass: float            # mean Wald over the cluster: sum(Wald) / number of channels
+    mass: float            # sum of Wald over the cluster ('sum'), or that / n channels ('mean')
     p: float
     threshold: float
     permutations: int
@@ -1205,30 +1206,36 @@ class LMMClusterResult:
     maxMass: np.ndarray    # sorted descending
     n_perm: int
     perms: np.ndarray = field(repr=False)
+    cluster_statistic: str = cluster_stat.DEFAULT   # 'sum' or 'mean'
 
 
-def _clusters(p_model, wald, alpha, graph):
-    """Connected channels with model p < alpha, each with mass sum(Wald)/n_channels."""
+def _clusters(p_model, wald, alpha, graph, rule=cluster_stat.DEFAULT):
+    """Connected channels with model p < alpha, each scored by ``cluster_stat.score`` (the
+    scorer the GLM tier uses)."""
     with np.errstate(invalid="ignore"):
         mask = np.where(np.isnan(p_model), 0.0, (p_model < alpha).astype(float))
-    return [(c, float(np.nansum(wald[c])) / c.size) for c in find_clusters(mask, 0.5, graph)]
+    return [(c, float(cluster_stat.score(wald, c, rule)))
+            for c in find_clusters(mask, 0.5, graph)]
 
 
 def cluster_correction(real_p, real_wald, perm_maps, graph: ChannelGraph, evaluable,
-                       alpha: float = 0.05) -> tuple[list[LMMCluster], np.ndarray]:
+                       alpha: float = 0.05, cluster_statistic: str = cluster_stat.DEFAULT
+                       ) -> tuple[list[LMMCluster], np.ndarray]:
     """Cluster-mass correction from the observed (p, Wald) maps and an iterable of permuted
     (p, Wald) maps: the second half of ``snpm_lmm_cluster.m``. Outside ``evaluable`` a channel
-    has no p and no mass in every map."""
+    has no p and no mass in every map. ``cluster_statistic`` ('sum' or 'mean') scores a
+    cluster."""
     ev = np.asarray(evaluable, bool)
+    rule = cluster_stat.resolve(cluster_statistic)
 
     def masked(p, w):
         return (np.where(ev, np.asarray(p, dtype=float), np.nan),
                 np.where(ev, np.asarray(w, dtype=float), 0.0))
 
-    real = _clusters(*masked(real_p, real_wald), alpha, graph)
+    real = _clusters(*masked(real_p, real_wald), alpha, graph, rule)
     null = []
     for p, w in perm_maps:
-        found = _clusters(*masked(p, w), alpha, graph)
+        found = _clusters(*masked(p, w), alpha, graph, rule)
         null.append(max(m for _, m in found) if found else 0.0)
     max_mass = _sort_desc(np.asarray(null, dtype=float))
     n = max_mass.size
@@ -1240,10 +1247,13 @@ def cluster_correction(real_p, real_wald, perm_maps, graph: ChannelGraph, evalua
 
 def lmm_cluster(power, meta: pd.DataFrame, spec: LMMSpec, graph: ChannelGraph,
                 alpha: float = 0.05, n_perm: int | None = None, evaluable=None,
-                rng: np.random.Generator | None = None, perms=None) -> LMMClusterResult:
+                rng: np.random.Generator | None = None, perms=None,
+                cluster_statistic: str = cluster_stat.DEFAULT) -> LMMClusterResult:
     """Cluster-mass permutation test (``snpm_lmm_cluster.m``): clusters of channels with model
-    p < alpha (two-sided for a continuous effect), mass = mean Wald (t^2 or F), null of the
-    largest mass per permutation (0 when a permutation has no cluster)."""
+    p < alpha (two-sided for a continuous effect), mass = sum of the Wald statistic (t^2 or F)
+    over the cluster, divided by the number of channels under ``cluster_statistic='mean'``;
+    null of the largest mass per permutation (0 when a permutation has no cluster)."""
+    rule = cluster_stat.resolve(cluster_statistic)
     check_design(spec, "both", list(meta.columns))
     check_effect(meta, spec)
     power, ev, model, perms = _setup(power, meta, spec, graph, evaluable, n_perm, rng, perms)
@@ -1254,5 +1264,6 @@ def lmm_cluster(power, meta: pd.DataFrame, spec: LMMSpec, graph: ChannelGraph,
             f = model.fit(power, permute_meta(model.meta, spec, row), ev)
             yield f.p_model, f.wald
 
-    clusters, max_mass = cluster_correction(real.p_model, real.wald, maps(), graph, ev, alpha)
-    return LMMClusterResult(clusters, max_mass, perms.shape[0], perms)
+    clusters, max_mass = cluster_correction(real.p_model, real.wald, maps(), graph, ev, alpha,
+                                            rule)
+    return LMMClusterResult(clusters, max_mass, perms.shape[0], perms, rule)

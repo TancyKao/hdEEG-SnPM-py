@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy import linalg, stats
 
-from . import circ_pipeline, legacy, missing
+from . import circ_pipeline, cluster_stat, legacy, missing
 from .io import tables
 from .montage import ChannelSetup, get_montage, setup_channels
 
@@ -494,6 +494,7 @@ class GLMResults:
     meta: object                 # the metadata columns as a DataFrame
     alpha: float
     notes: list[str] = field(default_factory=list)
+    cluster_statistic: str = cluster_stat.DEFAULT   # 'sum' or 'mean'
 
     def loop(self, role: str):
         return next(lp for lp in self.loops if lp.role == role)
@@ -567,12 +568,14 @@ def run_glm(params: dict, rng: np.random.Generator | None = None, perms=None) ->
     matrix per permutation loop, in run order."""
     from . import glm
 
+    rule = cluster_stat.resolve(params.get("cluster_statistic"))
     Y, meta, cols, setup = prepare_glm(params)
     rng = rng if rng is not None else np.random.default_rng(params.get("seed"))
     loops = glm.run_preset(params["comparison"], Y, meta, setup.graph,
                            n_perm=params.get("permutations", DEFAULT_PERMUTATIONS), rng=rng, perms=perms,
-                           alpha=ALPHA, E=TFCE_E, H=TFCE_H, **cols)
-    notes = [(f"S{pair[1:]} was not run: {why}." if pair.startswith(glm.SIMPLE_EFFECT)
+                           alpha=ALPHA, E=TFCE_E, H=TFCE_H, cluster_statistic=rule, **cols)
+    notes = [cluster_stat.results_line(rule)]                    # MATLAB's results-text line
+    notes += [(f"S{pair[1:]} was not run: {why}." if pair.startswith(glm.SIMPLE_EFFECT)
               else f"Post-hoc {lp.role}: {pair} was not run: {why}.")
              for lp in loops for pair, why in lp.skipped]
     for lp in loops:
@@ -585,7 +588,7 @@ def run_glm(params: dict, rng: np.random.Generator | None = None, perms=None) ->
     notes += [f"Post-hoc {lp.role.replace('/posthoc:', ': ')} left out subject(s) "
               f"{', '.join(lp.dropped)}, who have only one of the two levels." for lp in loops
               if lp.dropped]
-    return GLMResults(params["comparison"].lower(), loops, setup, meta, ALPHA, notes)
+    return GLMResults(params["comparison"].lower(), loops, setup, meta, ALPHA, notes, rule)
 
 
 def run(params: dict, rng: np.random.Generator | None = None):

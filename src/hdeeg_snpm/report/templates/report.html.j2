@@ -67,7 +67,7 @@
 Channels significant at p ≤ {{ alpha }}: {{ e.n_unc }} uncorrected, <span class="sig">{{ e.n_tfce }} after TFCE correction</span>, <span class="sig">{{ e.n_cluster }} in significant clusters</span>.</p>
 <img alt="{{ e.stat_name }} map, TFCE-corrected channels and numbered clusters for {{ e.title }}" src="{{ e.figure }}">
 <h3>Clusters</h3>
-<p class="chans">Clusters are neighbouring channels with {{ e.cluster_threshold }}. The cluster statistic is the cluster <strong>{{ e.cluster_statistic }}</strong> {{ e.cluster_note }}. The numbers match the numbers on the map.</p>
+<p class="chans">Clusters are neighbouring channels with {{ e.cluster_threshold }}. {{ e.cluster_note }} The numbers match the numbers on the map.</p>
 {% if e.clusters %}
 <table><tr><th>#</th><th>Channels</th><th>{{ e.cluster_statistic|capitalize }}</th><th>p (corrected)</th><th>Direction</th><th>Members</th></tr>
 {% for c in e.clusters %}<tr><td class="num">{{ c.number }}</td><td class="num">{{ c.n }}</td><td class="num">{{ c.statistic }}</td><td class="num{% if c.significant %} sig{% endif %}">{{ c.p }}</td><td>{{ c.direction }}</td><td class="chans">{{ c.labels|join(", ") }}</td></tr>

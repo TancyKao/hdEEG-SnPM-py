@@ -25,7 +25,8 @@ def _replay(fx, k):
                     perm_type=loop["perm_type"], effect_label=loop["name"])
     out = run_effect(np.asarray(loop["Y"], dtype=float), design, pu.graph_of(fx),
                      perms=pu.index0(log["indices"]), alpha=float(fx["glm"]["alpha"]),
-                     E=float(fx["glm"]["tfce_E"]), H=float(fx["glm"]["tfce_H"]))
+                     E=float(fx["glm"]["tfce_E"]), H=float(fx["glm"]["tfce_H"]),
+                     cluster_statistic=pu.cluster_statistic(fx))
     return loop, out
 
 
@@ -121,7 +122,8 @@ def test_preset_end_to_end_from_the_input_table(case):
     if not pu.matlab_has_2026_10_14_glm_fix(fx):
         pytest.skip("reference file predates the 2026-10-14 post-hoc and mixed2way changes")
     perms = [pu.index0(lg["indices"]) for lg in pu.as_list(fx["perm_log"])]
-    loops = run_preset(fx["params"]["comparison"], Y, meta, pu.graph_of(fx), perms=perms, **cols)
+    loops = run_preset(fx["params"]["comparison"], Y, meta, pu.graph_of(fx), perms=perms,
+                       cluster_statistic=pu.cluster_statistic(fx), **cols)
     for lp, r in zip(loops, pu.as_list(fx["glm"]["loops"])):
         what = f"{case} {lp.role}"
         pu.assert_close(lp.result.real_T, r["stat"], pu.STAT_RTOL, f"{what} statistic")
@@ -138,6 +140,7 @@ def _glm_params(fx):
     if "covariate_cols" in p and np.size(p["covariate_cols"]):
         out["covariate_cols"] = list(np.atleast_1d(p["covariate_cols"]))
     out["data_file"] = fx["source_files"]["data_file"]["absolute"]
+    out["cluster_statistic"] = pu.cluster_statistic(fx)
     return out
 
 

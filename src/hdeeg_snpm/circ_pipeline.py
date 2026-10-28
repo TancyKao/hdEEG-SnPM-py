@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import circ, glm
+from . import circ, cluster_stat, glm
 from . import perm as _perm
 from .io import tables
 from .montage import ChannelSetup, setup_channels
@@ -44,7 +44,6 @@ COMPARISONS = ("circ_phase_group", "circ_phase_group_u2", "circ_corrAngLinear")
 RETIRED = ("circ_wheeler_watson_Test", "circ_WatsonsU2Test")
 GATE_MIN = 8
 TFCE_DH, TFCE_DH_U2 = 0.1, 0.005
-CLUSTER_STATISTIC = "mass (sum stat / n channels)"
 
 STAT_LABELS = {"circ_phase_group": "Hotelling T^2 on (cos,sin), two groups",
                "circ_phase_group_u2": "Watson U^2, two groups",
@@ -69,8 +68,6 @@ def exclusion_reason(comparison: str) -> str:
     return EXCLUSION_REASON_CLR if comparison == "circ_corrAngLinear" else EXCLUSION_REASON
 
 
-CLUSTER_NOTE = ("Cluster statistic: MASS (sum of the statistic / n channels). This differs from "
-                "the FieldTrip maxsize used by Helfrich et al.")
 P_NOTE = ("Note: the parametric per-channel p is a cluster-forming and descriptive quantity "
           "only. For Watson U^2 at n=8 per group the exact enumerated null gives 0.1553 / 0.1787 "
           "/ 0.2412 at alpha .10 / .05 / .01 against the asymptotic 0.152 / 0.187 / 0.268 -- "
@@ -522,6 +519,8 @@ class CircResults:
     alpha: float
     seed: int | None = None
     tier: str = "circ"
+    cluster_statistic: str = cluster_stat.DEFAULT   # 'sum' or 'mean'
+
 
     @property
     def setup(self) -> ChannelSetup:
@@ -556,6 +555,7 @@ def run_circ(params: dict, rng: np.random.Generator | None = None, perms=None) -
     """
     from .pipeline import ALPHA, DEFAULT_PERMUTATIONS, TFCE_E, TFCE_H
 
+    rule = cluster_stat.resolve(params.get("cluster_statistic"))
     prep = prepare_circ(params)
     eng = build_engine(prep)
     n = prep.A.shape[0]
@@ -579,10 +579,11 @@ def run_circ(params: dict, rng: np.random.Generator | None = None, perms=None) -
     reasons[prep.excluded] = prep.excluded_reasons
     res = glm.perm_correction(eng.stat, eng.p, perm_stat, prep.setup.graph, perms.shape[0], "F",
                               prep.evaluable, ALPHA, TFCE_E, TFCE_H, prep.tfce_dh,
-                              reasons=reasons)
+                              reasons=reasons, cluster_statistic=rule)
     res.perms = perms
     desc = circ.descriptive(prep.A, prep.gi if prep.is_group else None, prep.evaluable)
-    return CircResults(prep, eng, res, desc, ALPHA, params.get("seed"))
+    prep.notes.append(cluster_stat.circ_results_line(rule))      # MATLAB's results-text line
+    return CircResults(prep, eng, res, desc, ALPHA, params.get("seed"), cluster_statistic=rule)
 
 
 def effect_label(prep: CircPrepared) -> str:

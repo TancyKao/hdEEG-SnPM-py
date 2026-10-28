@@ -34,6 +34,7 @@ def _params(fx):
             if not Path(src["absolute"]).exists():
                 pytest.skip(f"input file {src['absolute']} is not on this machine")
             out[key] = src["absolute"]
+    out["cluster_statistic"] = pu.cluster_statistic(fx)
     return out
 
 
