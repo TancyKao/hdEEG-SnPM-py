@@ -1,12 +1,16 @@
-"""The window's form without Qt: the parameters it builds equal a hand-written `[turtlewave]`
-config, its saved config reads back the same, and a run from it equals `snpm run`."""
+"""The window's form without Qt: the parameters it builds equal a hand-written config (with a
+`[turtlewave]` section, or naming table files), its saved config reads back the same, and a run
+from it equals `snpm run`."""
 
+import shutil
 import sqlite3
 import subprocess
 import sys
 import warnings
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from hdeeg_snpm import cli, gui
@@ -21,6 +25,8 @@ TOP = {
     "unpairedT": 'comparison = "unpairedT"\ntail = "both"\ngroup_col = "group"\n'
                  'groups = ["A", "B"]',
     "anova1": 'comparison = "anova1"\ngroup_col = "group"',
+    "ancova": 'comparison = "ancova"\ngroup_col = "group"\ncovariate_cols = ["age"]',
+    "regression": 'comparison = "regression"\npredictor_col = "score"\ncovariate_cols = ["age"]',
     "correlationP": 'comparison = "correlationP"\nbehavior_col = "score"',
     "correlationS": 'comparison = "correlationS"\nbehavior_col = "score"',
 }
@@ -28,6 +34,8 @@ ROLES = {
     "pairedT": {"sessions": ["ses-1", "ses-2"]},
     "unpairedT": {"group_col": "group", "groups": ["A", "B"]},
     "anova1": {"group_col": "group"},
+    "ancova": {"group_col": "group", "covariate_cols": ["age"]},
+    "regression": {"predictor_col": "score", "covariate_cols": ["age"]},
     "correlationP": {"behavior_col": "score"},
     "correlationS": {"behavior_col": "score"},
 }
@@ -38,7 +46,8 @@ def setup(tmp_path, comparison, out="out"):
     paired = comparison == "pairedT"
     study(tmp_path / "db", sessions=("ses-1", "ses-2") if paired else ("",))
     groups = ["A", "B", "C"] * 4 if comparison == "anova1" else ["A", "B"] * 6
-    subjects_csv(tmp_path / "subjects.csv", group=groups, score=np.linspace(0, 1, 12))
+    subjects_csv(tmp_path / "subjects.csv", group=groups, score=np.linspace(0, 1, 12),
+                 age=np.arange(20, 32) % 7)
     state = form.FormState(
         folder=str(tmp_path / "db"), sessions_found=["ses-1", "ses-2"] if paired else [""],
         event_type="spindle", method="Moelle2011", stage=["NREM2", "NREM3"], band=(12.0, 15.0),
@@ -54,7 +63,7 @@ def setup(tmp_path, comparison, out="out"):
     return state, tmp_path / "hand.toml"
 
 
-@pytest.mark.parametrize("comparison", list(form.ANALYSES))
+@pytest.mark.parametrize("comparison", form.SOURCE_ANALYSES["turtlewave"])
 def test_params_equal_the_hand_written_config_and_read_back(tmp_path, comparison):
     state, hand = setup(tmp_path, comparison)
     assert state.missing() == []
@@ -64,7 +73,7 @@ def test_params_equal_the_hand_written_config_and_read_back(tmp_path, comparison
     assert cli.load_config(saved) == state.to_params()
 
 
-@pytest.mark.parametrize("comparison", list(form.ANALYSES))
+@pytest.mark.parametrize("comparison", form.SOURCE_ANALYSES["turtlewave"])
 def test_a_run_from_the_form_equals_snpm_run(tmp_path, comparison):
     state, hand = setup(tmp_path, comparison, out="gui_out")
     hand.write_text(hand.read_text().replace('"gui_out"', '"out"'))
@@ -72,6 +81,137 @@ def test_a_run_from_the_form_equals_snpm_run(tmp_path, comparison):
         warnings.simplefilter("ignore")
         paths = run_and_write(state.to_params())
     same(np.load(paths["npz"]), run(hand)[0])
+
+
+EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "data"
+DESIGN_META = ["Subject", "group", "logAHI", "age", "sex"]
+TABLE_TOP = {
+    "pairedT": ('tail = "both"\ndata1_file = "condA.csv"\ndata2_file = "condB.csv"',
+                {"data1_file": "condA.csv", "data2_file": "condB.csv"}),
+    "unpairedT": ('tail = "both"\ndata1_file = "condA.csv"\ndata2_file = "condB.csv"',
+                  {"data1_file": "condA.csv", "data2_file": "condB.csv"}),
+    "onesampleT": ('data1_file = "condA.csv"', {"data1_file": "condA.csv"}),
+    "anova1": ('group_col = "group"\ndata_file = "design.csv"\n'
+               f"meta_cols = {DESIGN_META!r}".replace("'", '"'),
+               {"data1_file": "design.csv", "group_col": "group"}),
+    "ancova": ('group_col = "group"\ncovariate_cols = ["age", "sex"]\ndata_file = "design.csv"\n'
+               f"meta_cols = {DESIGN_META!r}".replace("'", '"'),
+               {"data1_file": "design.csv", "group_col": "group",
+                "covariate_cols": ["age", "sex"]}),
+    "regression": ('predictor_col = "logAHI"\ncovariate_cols = ["age", "sex"]\n'
+                   'data_file = "design.csv"\n'
+                   f"meta_cols = {DESIGN_META!r}".replace("'", '"'),
+                   {"data1_file": "design.csv", "predictor_col": "logAHI",
+                    "covariate_cols": ["age", "sex"]}),
+    "correlationP": ('data1_file = "condA.csv"\ndata2_file = "scores.csv"',
+                     {"data1_file": "condA.csv", "data2_file": "scores.csv"}),
+    "correlationS": ('data1_file = "condA.csv"\ndata2_file = "scores.csv"',
+                     {"data1_file": "condA.csv", "data2_file": "scores.csv"}),
+}
+
+
+def table_study(root):
+    """Synthetic tables: the paired example (24 subjects x 256 EGI channels), a design table of
+    the first condition with group, log AHI, age and sex, its Excel copy behind a notes sheet,
+    and a score table."""
+    root.mkdir(exist_ok=True)
+    shutil.copy(EXAMPLES / "paired_condA.csv", root / "condA.csv")
+    shutil.copy(EXAMPLES / "paired_condB.csv", root / "condB.csv")
+    eeg = pd.read_csv(EXAMPLES / "paired_condA.csv")
+    rng = np.random.default_rng(3)
+    n = len(eeg)
+    info = pd.DataFrame({"Subject": eeg["Subject"], "group": ["A", "B", "C"] * (n // 3),
+                         "logAHI": np.round(rng.normal(1.2, 0.4, n), 3),
+                         "age": rng.integers(30, 70, n), "sex": ["F", "M"] * (n // 2)})
+    design = pd.concat([info, eeg.drop(columns="Subject")], axis=1)
+    design.to_csv(root / "design.csv", index=False)
+    with pd.ExcelWriter(root / "design.xlsx") as book:
+        pd.DataFrame({"note": ["synthetic"]}).to_excel(book, sheet_name="notes", index=False)
+        design.to_excel(book, sheet_name="data", index=False)
+    info[["Subject", "logAHI"]].to_csv(root / "scores.csv", index=False)
+    return root
+
+
+def table_setup(tmp_path, comparison, out="out"):
+    """The form filled for ``comparison`` from the synthetic tables, and the hand-written
+    config of the same run."""
+    table_study(tmp_path)
+    top, fields = TABLE_TOP[comparison]
+    fields = dict(fields)
+    for k in ("data1_file", "data2_file"):
+        if k in fields:
+            fields[k] = str(tmp_path / fields[k])
+    meta = form.other_columns(form.table_columns(fields["data1_file"]))
+    state = form.FormState(source="table", comparison=comparison, permutations=100, seed=7,
+                           meta_cols=meta, output_path=str(tmp_path / out), **fields)
+    (tmp_path / "hand.toml").write_text(
+        f'comparison = "{comparison}"\n{top}\nchannels = "egi"\ndatatype = "absolute"\n'
+        f'permutations = 100\nseed = 7\noutput_path = "{out}"\n')
+    return state, tmp_path / "hand.toml"
+
+
+@pytest.mark.parametrize("comparison", form.SOURCE_ANALYSES["table"])
+def test_table_params_equal_the_hand_written_config_and_read_back(tmp_path, comparison):
+    state, hand = table_setup(tmp_path, comparison)
+    assert state.missing() == []
+    assert state.to_params() == cli.load_config(hand)
+    saved = tmp_path / "saved.toml"
+    saved.write_text(state.to_toml())
+    assert "[turtlewave]" not in saved.read_text()
+    assert cli.load_config(saved) == state.to_params()
+
+
+def test_the_detected_other_columns_are_the_meta_columns(tmp_path):
+    table_study(tmp_path)
+    cols = form.table_columns(tmp_path / "design.csv")
+    assert form.other_columns(cols) == DESIGN_META
+    assert form.role_columns(cols) == DESIGN_META[1:]
+    assert form.table_caption(cols, "egi") == (
+        "Detected: 256 channels, 5 other columns: Subject, group, logAHI, age, sex. "
+        "177 of them are EGI 256 (HydroCel) channels.")
+    assert form.table_caption(form.table_columns(tmp_path / "scores.csv"), "egi") == \
+        "Detected: 0 channels, 2 other columns: Subject, logAHI."
+
+
+def test_an_excel_sheet_is_named_in_the_config(tmp_path):
+    state, hand = table_setup(tmp_path, "regression")
+    assert form.sheet_names(tmp_path / "design.xlsx") == ["notes", "data"]
+    assert form.sheet_names(tmp_path / "design.csv") == []
+    assert form.table_columns(tmp_path / "design.xlsx", "notes") == ["note"]
+    state.data1_file, state.data1_sheet = str(tmp_path / "design.xlsx"), "data"
+    hand.write_text(hand.read_text().replace('data_file = "design.csv"',
+                                             'data_file = "design.xlsx"\ndata_sheet = "data"'))
+    assert state.to_params() == cli.load_config(hand)
+
+
+@pytest.mark.parametrize("comparison", ["regression", "ancova"])
+def test_a_table_run_from_the_form_equals_snpm_run(tmp_path, comparison):
+    state, hand = table_setup(tmp_path, comparison, out="gui_out")
+    hand.write_text(hand.read_text().replace('"gui_out"', '"out"'))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        paths = run_and_write(state.to_params())
+    npz, js = run(hand)
+    same(np.load(paths["npz"]), npz)
+    assert js["params"]["covariate_cols"] == ["age", "sex"]
+
+
+def test_table_missing_lists_files_and_roles():
+    s = form.FormState(source="table", comparison="pairedT")
+    assert s.roles() == [] and s.files() == ("Condition 1 file", "Condition 2 file")
+    assert s.missing() == ["a condition 1 file (press Enter or Load to read it)",
+                           "a condition 2 file (press Enter or Load to read it)",
+                           "an output folder"]
+    s = form.FormState(source="table", comparison="regression", data1_file="d.csv",
+                       output_path="out", sessions_found=["a", "b"])
+    assert s.roles() == ["predictor_col", "covariate_cols"]
+    assert s.missing() == ["a predictor column"]
+    s.predictor_col = "logAHI"
+    assert s.missing() == [] and "covariate_cols" not in s.to_params()
+    s.comparison = "ancova"
+    assert s.missing() == ["a group column", "at least one covariate column"]
+    s.comparison = "correlationS"
+    assert s.missing() == ["a score file (press Enter or Load to read it)"]
 
 
 def test_missing_lists_what_each_analysis_still_needs():
@@ -247,3 +387,37 @@ def test_a_subject_id_error_is_worded_for_the_window(tmp_path):
         tw.find_recordings(tmp_path)
     text = form.window_message(str(err.value))
     assert "set Subject ID from to folder or database" in text and "subject_from" not in text
+
+
+@pytest.mark.parametrize("ext", ["csv", "xlsx"])
+def test_a_numeric_header_is_a_column_name(tmp_path, ext):
+    from hdeeg_snpm.io import tables
+    from hdeeg_snpm.pipeline import prepare_glm
+    table_study(tmp_path)
+    design = pd.read_csv(tmp_path / "design.csv").rename(columns={"age": 1995})
+    path = tmp_path / f"numeric.{ext}"
+    design.to_csv(path, index=False) if ext == "csv" else design.to_excel(path, index=False)
+    cols = form.table_columns(path)
+    assert "1995" in cols and all(isinstance(c, str) for c in tables.read_table(path).columns)
+    meta = form.other_columns(cols)
+    assert meta == ["Subject", "group", "logAHI", "1995", "sex"]
+    _, info, roles, _ = prepare_glm({"comparison": "regression", "data_file": str(path),
+                                     "meta_cols": meta, "predictor_col": "logAHI",
+                                     "covariate_cols": ["1995"]})
+    assert roles["covariate_cols"] == ["1995"] and list(info["1995"]) == list(design[1995])
+
+
+def test_the_predictor_menu_offers_only_numeric_columns(tmp_path):
+    """A regression predictor must be numeric (the pipeline refuses a text one), so the window
+    offers only the columns read as numbers; covariates may be text (dummy-coded)."""
+    cols, numeric = form.table_info(EXAMPLES / "glm_regression.csv")
+    assert numeric[:2] == ["logAHI", "age"] and "group" not in numeric and "sex" not in numeric
+    assert form.predictor_choices(form.role_columns(cols), numeric) == ["logAHI", "age"]
+    assert form.covariate_choices(form.role_columns(cols), "regression", "", "logAHI") == \
+        ["group", "age", "sex"]
+    path = tmp_path / "s.csv"
+    pd.DataFrame({"Subject": ["01", "02", "03"], "group": ["A", "B", "A"],
+                  "score": [0.1, None, 0.3], "age": [30, 40, 50],
+                  "flag": [True, False, True]}).to_csv(path, index=False)
+    assert form.subjects_numeric_columns(path) == ["score", "age"]      # true/false left out
+    assert form.numeric_columns(pd.DataFrame({"f": [True, False], "x": [1.0, 2.0]})) == ["x"]

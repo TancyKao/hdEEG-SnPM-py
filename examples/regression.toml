@@ -1,0 +1,14 @@
+# Regression on the synthetic table in examples/data (made by make_regression_example.py): the
+# slope of logAHI per channel, adjusted for age and sex. An effect is planted on E129 and its
+# neighbours. For the ANCOVA on the same table, set comparison = "ancova", group_col = "group"
+# and remove predictor_col.
+comparison     = "regression"
+channels       = "egi"
+datatype       = "absolute"
+data_file      = "data/glm_regression.csv"
+meta_cols      = ["Subject", "group", "logAHI", "age", "sex"]
+predictor_col  = "logAHI"
+covariate_cols = ["age", "sex"]
+permutations   = 1000
+seed           = 20261027
+output_path    = "../example_output"

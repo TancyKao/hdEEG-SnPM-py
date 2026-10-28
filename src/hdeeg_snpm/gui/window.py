@@ -1,6 +1,7 @@
 """The PyQt5 window: a thin view on ``form.FormState``.
 
-The window lists what the databases hold, collects the choices into a ``FormState`` and hands
+The window lists what the databases hold, or the columns of a table file (CSV or Excel), collects
+the choices into a ``FormState`` and hands
 ``FormState.to_params()`` to ``output.run_and_write`` in a worker thread. It checks nothing
 itself: every refusal comes from ``io.turtlewave_config.prepare`` and the pipeline, and is shown
 with its own text. While a run is in progress the inputs are locked and the window does not
@@ -111,10 +112,22 @@ def _row(*widgets):
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("hdEEG-SnPM: analyse TurtleWave databases")
+        self.setWindowTitle("hdEEG-SnPM")
         self.state = form.FormState()
         self.available = self.subjects = None
         self.loaded_folder = self.loaded_subjects = ""     # the paths read, not the text shown
+        self.loaded_table = {1: "", 2: ""}                 # table source: the files read
+        self.sheets_of = {1: "", 2: ""}                    # the file whose sheets are listed
+        self.columns = {1: None, 2: None}                  # their column names
+        self.numeric = {1: [], 2: []}                      # those read as numbers
+        self.subjects_numeric = []                         # same, of the subjects file
+        self.file2_label = ""                              # what the second file was read as
+        self.role_cols = []                                # the columns roles can name
+
+        # 0. Data source
+        self.source = QComboBox()
+        _fill(self.source, [(v, k) for k, v in form.SOURCES.items()])
+        self.source.currentIndexChanged.connect(self._source_changed)
         self.worker = None
         self.paths = None
         self.close_when_done = False
@@ -177,9 +190,33 @@ class MainWindow(QWidget):
         events.addRow("Rejected before density", self.reject_row)
         self.events_form = events
 
+        # 1-2. Table files (table source)
+        self.table_form = QFormLayout()
+        self.file_edit, self.sheet, self.caption, self.file_rows = {}, {}, {}, {}
+        for i in (1, 2):
+            edit = self.file_edit[i] = QLineEdit()
+            edit.setPlaceholderText("CSV or Excel file: a subject column, channels E1, E2, … "
+                                    "and any other columns" if i == 1 else
+                                    "the second table, or a subject column plus one score")
+            edit.editingFinished.connect(lambda i=i: self.load_table(i))
+            edit.textChanged.connect(self.refresh)
+            load_t = QPushButton("Load")
+            load_t.clicked.connect(lambda _=False, i=i: self.load_table(i, force=True))
+            browse_t = QPushButton("Browse…")
+            browse_t.clicked.connect(lambda _=False, i=i: self._browse_table(i))
+            self.sheet[i] = QComboBox()
+            self.sheet[i].currentIndexChanged.connect(lambda _=0, i=i: self._sheet_changed(i))
+            self.caption[i] = QLabel()
+            self.caption[i].setWordWrap(True)
+            self.file_rows[i] = _row(edit, load_t, browse_t)
+            self.table_form.addRow(f"File {i}", self.file_rows[i])
+            self.table_form.addRow("Excel sheet", self.sheet[i])
+            self.table_form.addRow(self.caption[i])
+
         # 3. Analysis
         self.analysis = QComboBox()
-        _fill(self.analysis, [(v, k) for k, v in form.ANALYSES.items()], select="unpairedT")
+        _fill(self.analysis, [(form.ANALYSES[k], k) for k in form.SOURCE_ANALYSES["turtlewave"]],
+              select="unpairedT")
         self.tail = QComboBox()
         _fill(self.tail, [("two-sided", "both"), ("left", "left"), ("right", "right")])
         self.permutations = QSpinBox()
@@ -216,6 +253,12 @@ class MainWindow(QWidget):
         self.group_col.currentIndexChanged.connect(self._fill_groups)
         self.group1, self.group2 = QComboBox(), QComboBox()
         self.score_col = QComboBox()
+        self.predictor_col = QComboBox()
+        self.covariates = QListWidget()
+        self.covariates.setMaximumHeight(90)
+        self.covariates.setToolTip("Tick the covariates to adjust for; text columns such as "
+                                   "sex are dummy-coded.")
+        self.covariates.itemChanged.connect(self.refresh)
         self.session = QComboBox()
         self.roles = QFormLayout()
         self.role_rows = {
@@ -224,11 +267,15 @@ class MainWindow(QWidget):
             "group_col": self.group_col,
             "groups": _row(QLabel("Data 1"), self.group1, QLabel("Data 2"), self.group2),
             "behavior_col": self.score_col,
+            "predictor_col": self.predictor_col,
+            "covariate_cols": self.covariates,
             "session": self.session,
         }
         for key, label in (("sessions", "Sessions"), ("subjects_file", "Subjects file"),
                            ("group_col", "Group column"), ("groups", "Groups"),
                            ("behavior_col", "Score column"),
+                           ("predictor_col", "Predictor column"),
+                           ("covariate_cols", "Covariate columns"),
                            ("session", "Session to analyse")):
             self.roles.addRow(label, self.role_rows[key])
 
@@ -263,23 +310,31 @@ class MainWindow(QWidget):
 
         for w in (self.method, self.band, self.measure, self.analysis, self.tail, self.system,
                   self.datatype, self.session1, self.session2, self.group1, self.group2,
-                  self.score_col, self.session):
+                  self.score_col, self.predictor_col, self.session):
             w.currentIndexChanged.connect(self.refresh)
+        self.system.currentIndexChanged.connect(self._captions)
+        for w in (self.analysis, self.group_col, self.predictor_col):
+            w.currentIndexChanged.connect(lambda *_: (self._fill_covariates(), self.refresh()))
         self.permutations.valueChanged.connect(self.refresh)
         for w in (self.seed, self.out_edit):
             w.textChanged.connect(self.refresh)
 
         left, right = QVBoxLayout(), QVBoxLayout()
-        self.input_boxes = []
-        for lay, (title, inner) in [(left, ("1. Study", study)), (left, ("2. Events", events)),
-                                    (right, ("3. Analysis", analysis)),
-                                    (right, ("4. Roles", self.roles)),
-                                    (right, ("5. Output", output)), (right, ("Log", log))]:
-            box = QGroupBox(title)
+        source = QFormLayout()
+        source.addRow("Data source", self.source)
+        self.input_boxes, self.boxes = [], {}
+        for lay, (title, inner) in [(left, ("Data", source)), (left, ("Study", study)),
+                                    (left, ("Events", events)),
+                                    (left, ("Table files", self.table_form)),
+                                    (right, ("Analysis", analysis)),
+                                    (right, ("Roles", self.roles)),
+                                    (right, ("Output", output)), (right, ("Log", log))]:
+            box = self.boxes[title] = QGroupBox(title)
             box.setLayout(inner)
             lay.addWidget(box)
             if title != "Log":
                 self.input_boxes.append(box)
+        left.addStretch(1)
         top = QHBoxLayout(self)
         top.addLayout(left, 1)
         top.addLayout(right, 1)
@@ -374,18 +429,111 @@ class MainWindow(QWidget):
         text = self.subjects_edit.text().strip()
         if text == self.loaded_subjects and not force:
             return
-        self.subjects, self.loaded_subjects = None, ""
+        self.subjects, self.loaded_subjects, self.subjects_numeric = None, "", []
         try:
             self.subjects = form.subjects_table(text) if text else None
+            self.subjects_numeric = form.subjects_numeric_columns(text) if text else []
             self.loaded_subjects = text
         except Exception as err:     # noqa: BLE001 - shown; the file stays unloaded
             self.log.appendPlainText(f"Could not read the subjects file: {err}")
-        cols = form.info_columns(self.subjects) if self.subjects is not None else []
-        _fill(self.group_col, cols, placeholder="choose a column",
-              select="group" if "group" in cols else None)
-        _fill(self.score_col, cols, placeholder="choose a column",
-              select=cols[0] if len(cols) == 1 else None)
+        self._fill_roles()
+
+    def load_table(self, i, path=None, force=False, sheet=None):
+        """Read the columns of table file ``i`` (1 or 2) in its field; as ``load_folder``, an
+        unchanged field keeps what was read and chosen. A new file lists its sheets and reads
+        the first; ``sheet`` re-reads the listed file with that sheet."""
+        if self.running():
+            return
+        edit = self.file_edit[i]
+        if path is not None:
+            edit.blockSignals(True)
+            edit.setText(str(path))
+            edit.blockSignals(False)
+        text = edit.text().strip()
+        if text == self.loaded_table[i] and not force:
+            return
+        self.loaded_table[i], self.columns[i], self.numeric[i] = "", None, []
+        self.caption[i].setText("")
+        try:
+            if text and sheet is None:
+                self.sheets_of[i] = ""
+                _fill(self.sheet[i], form.sheet_names(text))
+                self.sheets_of[i] = text
+            if text:
+                cols, numeric = form.table_info(text, _data(self.sheet[i]))
+                self.loaded_table[i], self.columns[i], self.numeric[i] = text, cols, numeric
+                if i == 2:
+                    files = self.state.files()
+                    self.file2_label = files[1] if len(files) > 1 else ""
+        except Exception as err:     # noqa: BLE001 - shown; the file stays unloaded
+            self.caption[i].setText(f"Could not read the file: {err}")
+        if not text:
+            self.sheets_of[i] = ""
+            _fill(self.sheet[i], [])
+        self._captions()
+        if i == 1:
+            self._fill_roles()
+        else:
+            self.refresh()
+
+    def _sheet_changed(self, i):
+        """Another sheet of the listed workbook: read its columns. Ignored while the field
+        holds another path (the menu is hidden then)."""
+        if self.sheets_of[i] and self.file_edit[i].text().strip() == self.sheets_of[i]:
+            self.load_table(i, path=self.sheets_of[i], force=True, sheet=_data(self.sheet[i]))
+
+    def _captions(self, *_):
+        for i in (1, 2):
+            if self.columns[i] is not None:
+                self.caption[i].setText(form.table_caption(self.columns[i], _data(self.system)))
+
+    def _source_changed(self):
+        """Another data source: offer its analyses (keeping the one chosen when it has it) and
+        the columns it names roles from."""
+        source = _data(self.source)
+        keep = _data(self.analysis)
+        offered = form.SOURCE_ANALYSES[source]
+        _fill(self.analysis, [(form.ANALYSES[k], k) for k in offered],
+              select=keep if keep in offered else "unpairedT")
+        self._fill_roles()
+
+    def _fill_roles(self):
+        """Fill the role menus from the columns of the current source, keeping a choice still
+        offered: the subjects file (databases) or the data file (table). The predictor menu
+        offers only the columns read as numbers; a text column such as a group is no slope."""
+        if _data(self.source) == "table":
+            cols = form.role_columns(self.columns[1]) if self.columns[1] is not None else []
+            numeric = self.numeric[1]
+        else:
+            cols = form.info_columns(self.subjects) if self.subjects is not None else []
+            numeric = self.subjects_numeric
+
+        def keep(combo, items, default=None):
+            prev = _data(combo)
+            _fill(combo, items, placeholder="choose a column",
+                  select=prev if prev in items else default)
+        keep(self.group_col, cols, "group" if "group" in cols else None)
+        keep(self.score_col, cols, cols[0] if len(cols) == 1 else None)
+        keep(self.predictor_col, form.predictor_choices(cols, numeric))
+        self.role_cols = cols
+        self._fill_covariates()
         self._fill_groups()
+
+    def _fill_covariates(self, *_):
+        """The covariate list: the role columns but the effect of interest, which is dropped
+        from the ticked covariates when it becomes the group or predictor."""
+        cols = form.covariate_choices(self.role_cols, _data(self.analysis),
+                                      _data(self.group_col), _data(self.predictor_col))
+        ticked = {self.covariates.item(k).text() for k in range(self.covariates.count())
+                  if self.covariates.item(k).checkState() == Qt.Checked}
+        self.covariates.blockSignals(True)
+        self.covariates.clear()
+        for c in cols:
+            item = QListWidgetItem(c)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if c in ticked else Qt.Unchecked)
+            self.covariates.addItem(item)
+        self.covariates.blockSignals(False)
 
     def _fill_groups(self):
         col = _data(self.group_col)
@@ -424,10 +572,53 @@ class MainWindow(QWidget):
         s.group_col = _data(self.group_col) or ""
         s.groups = [_data(self.group1) or "", _data(self.group2) or ""]
         s.behavior_col = _data(self.score_col) or ""
+        s.predictor_col = _data(self.predictor_col) or ""
+        s.covariate_cols = [self.covariates.item(k).text() for k in range(self.covariates.count())
+                            if self.covariates.item(k).checkState() == Qt.Checked]
+        s.source = _data(self.source)
+        files = {}
+        for i in (1, 2):
+            # As for the folder: a table typed but not read yet counts as no table.
+            same = self.file_edit[i].text().strip() == self.loaded_table[i]
+            files[i] = self.loaded_table[i] if same and self.columns[i] is not None else ""
+        s.data1_file, s.data2_file = files[1], files[2]
+        s.data1_sheet = _data(self.sheet[1]) if files[1] else None
+        s.data2_sheet = _data(self.sheet[2]) if files[2] else None
+        s.meta_cols = form.other_columns(self.columns[1]) if files[1] else []
         s.output_path = self.out_edit.text().strip()
 
     def refresh(self, *_):
         self._read()
+        table, files = self.state.table(), self.state.files()
+        if len(files) > 1 and self.file_edit[2].text() and files[1] != self.file2_label:
+            # The second file now means something else (a condition, a group, a score table):
+            # one read for another analysis is not carried over.
+            self.file2_label = files[1]
+            self.file_edit[2].blockSignals(True)
+            self.file_edit[2].clear()
+            self.file_edit[2].blockSignals(False)
+            self.loaded_table[2], self.columns[2], self.sheets_of[2] = "", None, ""
+            _fill(self.sheet[2], [])
+            self.caption[2].setText("")
+            self._read()
+        visible = {"Data": True, "Study": not table, "Events": not table, "Table files": table,
+                   "Analysis": True, "Roles": bool(self.state.roles()), "Output": True}
+        number = 0
+        for title, box in self.boxes.items():
+            if title != "Log":
+                box.setVisible(visible[title])
+                number += visible[title] and title != "Data"
+                box.setTitle(title if title == "Data" else f"{number}. {title}")
+        for i in (1, 2):
+            on = i <= len(files)
+            label = self.table_form.labelForField(self.file_rows[i])
+            label.setText(files[i - 1] if on else f"File {i}")
+            for w in (self.file_rows[i], label, self.caption[i]):
+                w.setVisible(on)
+            sheet = on and self.sheet[i].count() > 0 and \
+                self.file_edit[i].text().strip() == self.sheets_of[i]
+            self.sheet[i].setVisible(sheet)
+            self.table_form.labelForField(self.sheet[i]).setVisible(sheet)
         shown = self.state.roles()
         for key, w in self.role_rows.items():
             w.setVisible(key in shown)
@@ -528,6 +719,12 @@ class MainWindow(QWidget):
                                               "Tables (*.csv *.xlsx *.xls *.xlsm)")
         if path:
             self.load_subjects(path, force=True)
+
+    def _browse_table(self, i):
+        path, _ = QFileDialog.getOpenFileName(self, "Table file", "",
+                                              "Tables (*.csv *.xlsx *.xls *.xlsm)")
+        if path:
+            self.load_table(i, path, force=True)
 
     def _browse_out(self):
         path = QFileDialog.getExistingDirectory(self, "Output folder")

@@ -1,4 +1,4 @@
-"""A window that runs an analysis straight from TurtleWave databases (``snpm gui``).
+"""A window that runs an analysis from TurtleWave databases or a CSV/Excel table (``snpm gui``).
 
 The window needs PyQt5 (``pip install hdeeg-snpm[gui]``); nothing else in the package does, so
 PyQt5 is imported only in ``window.py``.

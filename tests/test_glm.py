@@ -243,12 +243,20 @@ def test_posthoc_drops_subjects_with_one_of_the_two_levels_and_says_so(egi_graph
 def test_posthoc_that_cannot_be_estimated_is_skipped_with_a_warning(egi_graph):
     rng = np.random.default_rng(14)
     meta, Y = _three_groups(rng, egi_graph.n, n=6)
-    meta["site"] = np.where(meta.group == "a", "x", "y")     # coincides with a versus the rest
+    # site is x for a, y for b and alternates within c: it coincides with group on the a and b
+    # rows only, so the omnibus effect is estimable and only the pair a vs b is not. (Site equal
+    # to "a versus the rest" aliases group_c in the omnibus, which is now refused: see
+    # test_effect_aliased_with_the_nuisance_is_refused.)
+    c_rows = np.flatnonzero(meta.group == "c")
+    site = np.where(meta.group == "a", "x", "y").astype(object)
+    site[c_rows[::2]] = "x"
+    meta["site"] = site
     with pytest.warns(UserWarning, match="a vs b.*cannot be estimated"):
         plan = glm.plan_preset("ancova", Y, meta, group_col="group", covariate_cols=["site"])
     roles = [lp.role for lp in plan]
-    assert "main/posthoc:a vs b" not in roles and "main/posthoc:b vs c" in roles
-    assert [pair for pair, _ in plan[0].skipped] == ["a vs b", "a vs c"]
+    assert "main/posthoc:a vs b" not in roles
+    assert "main/posthoc:a vs c" in roles and "main/posthoc:b vs c" in roles
+    assert [pair for pair, _ in plan[0].skipped] == ["a vs b"]
 
 
 def test_posthoc_stays_nominal_when_a_third_level_differs_everywhere(egi_graph):
@@ -395,3 +403,250 @@ def test_workbook_lists_skipped_pairs_even_when_no_pair_ran(tmp_path):
     write_workbook(tmp_path / "w.xlsx", [view], ["E1", "E2", "E3"], 0.05)
     contents = pd.read_excel(tmp_path / "w.xlsx", sheet_name="contents")
     assert contents.Status.tolist() == ["run", "not run: cannot be estimated"]
+
+
+# ------------------------------------------- MATLAB test_glm_snpm T19-T22 (2026-10-26): estimability
+
+_ALIAS_HEAD = "The effect tested ({}) cannot be separated from the nuisance columns of the design: "
+_ALIAS_TAIL = (". Its contrast is not estimable, so the statistic and every p-value would be "
+               "arbitrary. Remove the covariate that repeats the effect, or test a different "
+               "effect.")
+
+
+def _alias_meta(seed=7):
+    rng = np.random.default_rng(seed)
+    n = 30
+    logahi, age = rng.standard_normal(n), 40 + 10 * rng.standard_normal(n)
+    g = np.tile(["a", "b", "c"], n // 3)
+    return pd.DataFrame({"logAHI": logahi, "age": age, "ahi2": 2 * logahi + 5,
+                         "age_months": age * 12, "group": g,
+                         "site": np.where(g == "a", "x", "y")})       # site_y = D_b + D_c
+
+
+def _alias_csv(tmp_path, name, meta, rng):
+    from hdeeg_snpm.montage import get_montage
+    labels = list(get_montage("egi").labels)
+    frame = pd.concat([meta, pd.DataFrame(rng.standard_normal((len(meta), len(labels))),
+                                          columns=labels)], axis=1)
+    path = tmp_path / f"{name}.csv"
+    frame.to_csv(path, index=False)
+    return str(path)
+
+
+def _glm_params(preset, path, meta_cols, perms=20, **kw):
+    return dict({"comparison": preset, "data_file": path, "channels": "egi",
+                 "meta_cols": list(meta_cols), "permutations": perms, "seed": 1}, **kw)
+
+
+def test_effect_aliased_with_the_nuisance_is_refused(tmp_path):
+    """MATLAB T19: an effect in the span of the nuisance columns has no estimable contrast; pinv
+    would give a finite, arbitrary statistic. Refused with the aliased columns named."""
+    from hdeeg_snpm import pipeline
+    meta = _alias_meta()
+    path = _alias_csv(tmp_path, "glm_alias", meta, np.random.default_rng(1))
+    cases = [("regression", {"predictor_col": "logAHI", "covariate_cols": ["logAHI", "age"]},
+              "slope of logAHI", "predictor logAHI is a linear combination of covariate logAHI"),
+             ("regression", {"predictor_col": "logAHI", "covariate_cols": ["ahi2", "age"]},
+              "slope of logAHI", "predictor logAHI is a linear combination of covariate ahi2"),
+             ("ancova", {"group_col": "group", "covariate_cols": ["age", "site"]},
+              "group (3 levels), covariate-adjusted",
+              "group_c is a linear combination of (Intercept), covariate site_y, group_b")]
+    for preset, kw, label, item in cases:
+        with pytest.raises(glm.GLMInputError) as e:
+            pipeline.run_glm(_glm_params(preset, path, meta.columns, **kw))
+        assert e.value.code == "effectAliased"
+        assert str(e.value) == _ALIAS_HEAD.format(label) + item + _ALIAS_TAIL
+
+    # rmanova: condition r only in two subjects with a single row each, so its dummy is the sum
+    # of their subject dummies
+    mr = pd.DataFrame({"subject": np.r_[np.repeat(np.arange(1, 9), 2), 9, 10],
+                       "condition": list(np.tile(["p", "q"], 8)) + ["r", "r"]})
+    path = _alias_csv(tmp_path, "glm_alias_rm", mr, np.random.default_rng(2))
+    with pytest.raises(glm.GLMInputError) as e:
+        pipeline.run_glm(_glm_params("rmanova", path, mr.columns, subject_col="subject",
+                                     condition_col="condition"))
+    assert e.value.code == "effectAliased"
+    assert str(e.value) == (_ALIAS_HEAD.format("condition (3 levels), within-subject")
+                            + "condition_r is a linear combination of subject_9, subject_10"
+                            + _ALIAS_TAIL)
+
+
+def test_nuisance_only_dependency_warns_once_and_changes_nothing(tmp_path):
+    """MATLAB T20: covariates {age, age_months} span the space of {age}: the effect is
+    estimable, the run warns once and its maps equal the {age} run's."""
+    import warnings
+
+    from hdeeg_snpm import pipeline
+    meta = _alias_meta()
+    path = _alias_csv(tmp_path, "glm_nuis_rank", meta, np.random.default_rng(20))
+    base = _glm_params("regression", path, meta.columns, perms=50, predictor_col="logAHI")
+    with warnings.catch_warnings(record=True) as w1:
+        warnings.simplefilter("always")
+        r1 = pipeline.run_glm(dict(base, covariate_cols=["age", "age_months"]))
+    with warnings.catch_warnings(record=True) as w2:
+        warnings.simplefilter("always")
+        r2 = pipeline.run_glm(dict(base, covariate_cols=["age"]))
+    hits = [x for x in w1 if issubclass(x.category, glm.GLMNuisanceRankDeficient)]
+    assert len(hits) == 1
+    assert str(hits[0].message) == (
+        "The nuisance columns of the design are linearly dependent: covariate age_months is a "
+        "linear combination of covariate age. The effect is still estimable and the analysis "
+        "runs; the adjustment is for the space these columns span, which the redundant column "
+        "does not enlarge. Check the covariate list.")
+    assert not [x for x in w2 if issubclass(x.category, glm.GLMNuisanceRankDeficient)]
+    a, b = r1.loop("main").result, r2.loop("main").result
+    assert np.array_equal(np.isnan(a.real_T), np.isnan(b.real_T))
+    assert np.nanmax(np.abs(a.real_T - b.real_T)) <= 1e-12 * max(1, np.nanmax(np.abs(b.real_T)))
+    assert np.array_equal(a.p_correctedTFCE, b.p_correctedTFCE, equal_nan=True)
+
+    # a post-hoc pair with the redundant covariate runs, with the t of the pair without it
+    Y = np.random.default_rng(3).standard_normal((len(meta), 5))
+    plans = [glm.plan_preset("ancova", Y, meta, group_col="group", covariate_cols=cv)
+             for cv in (["age", "age_months"], ["age"])]
+    for plan in plans:
+        assert not plan[0].skipped
+    p1, p2 = (next(lp for lp in plan if lp.role == "main/posthoc:a vs b") for plan in plans)
+    assert np.max(np.abs(glm.glm_stat(p1.Y, p1.design.X, p1.C)[0]
+                         - glm.glm_stat(p2.Y, p2.design.X, p2.C)[0])) < 1e-10   # pinv on a
+    # rank-deficient X agrees to about 2e-12 here (MATLAB's own check uses 1e-12)
+
+
+def test_clean_regression_is_estimable_and_recovers_a_planted_effect():
+    """MATLAB T21: the full-rank design is not flagged, has MATLAB's column names, warns
+    nothing, recovers a planted effect and finds nothing under the null."""
+    import warnings
+
+    from hdeeg_snpm.clusters import ChannelGraph
+    meta = _alias_meta()
+    n, n_ch = len(meta), 20
+    nb = np.full((n_ch, 2), -1)
+    nb[1:, 0] = np.arange(n_ch - 1)
+    nb[:-1, 1] = np.arange(1, n_ch)
+    graph = ChannelGraph(nb)                                     # a chain of 20 channels
+    d = glm.build_design("regression", meta, predictor_col="logAHI", covariate_cols=["age"])
+    info = glm.estimability(d)
+    assert info.estimable and not info.nuisance_deficient
+    assert d.col_names == ["(Intercept)", "predictor logAHI", "covariate age"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        glm.estimability(d, enforce=True)
+    rng = np.random.default_rng(21)
+    Y = rng.standard_normal((n, n_ch))
+    Y[:, :5] += meta["logAHI"].to_numpy()[:, None]
+    hit = glm.run_effect(Y, d, graph, n_perm=500, rng=rng).p_correctedTFCE < 0.05
+    null = glm.run_effect(np.random.default_rng(22).standard_normal((n, n_ch)), d, graph,
+                          n_perm=500, rng=np.random.default_rng(23)).p_correctedTFCE < 0.05
+    assert hit[:5].all() and not hit[5:].any()
+    assert not null.any()
+
+
+def test_ancova_without_a_covariate_is_refused_before_the_file_is_read(tmp_path):
+    """MATLAB T22: ANCOVA with no covariate is a one-way ANOVA labelled covariate-adjusted."""
+    from hdeeg_snpm import pipeline
+    want = "ANCOVA needs at least one covariate; with none, use anova1."
+    absent = str(tmp_path / "not_there.csv")             # never read
+    for extra in ({}, {"covariate_cols": []}):
+        with pytest.raises(glm.GLMInputError) as e:
+            pipeline.run_glm(_glm_params("ancova", absent, ["group"], group_col="group", **extra))
+        assert e.value.code == "ancovaNoCovariate" and str(e.value) == want
+
+
+def test_ancova_blank_or_dropped_covariates_are_refused(tmp_path, egi_graph):
+    """MATLAB snpm_glm_require_covariate: '' and [''] name no covariate (refused before the
+    file is read); covariates that are all constant on the analysed rows are dropped by the
+    design, which leaves no covariate (refused after reading). The check also guards the
+    engine entry points used without the pipeline."""
+    from hdeeg_snpm import pipeline
+    want = "ANCOVA needs at least one covariate; with none, use anova1."
+    absent = str(tmp_path / "not_there.csv")
+    for blank in ("", [""], ["", "  "]):
+        with pytest.raises(glm.GLMInputError) as e:
+            pipeline.run_glm(_glm_params("ancova", absent, ["group"], group_col="group",
+                                         covariate_cols=blank))
+        assert e.value.code == "ancovaNoCovariate" and str(e.value) == want
+
+    meta = _alias_meta().assign(const=5.0, ward="w1")      # numeric constant, one-level text
+    path = _alias_csv(tmp_path, "glm_ancova_const", meta, np.random.default_rng(4))
+    for cv in (["const"], ["ward"], ["const", "ward"]):
+        with pytest.raises(glm.GLMInputError) as e:
+            pipeline.run_glm(_glm_params("ancova", path, meta.columns, group_col="group",
+                                         covariate_cols=cv))
+        assert e.value.code == "ancovaNoCovariate" and str(e.value) == want
+    # one varying covariate among constant ones runs
+    res = pipeline.run_glm(_glm_params("ancova", path, meta.columns, group_col="group",
+                                       covariate_cols=["const", "age"]))
+    assert res.loop("main").design.col_names[-1] == "covariate age"
+
+    # engine entry points without the pipeline: no covariate given, or none kept
+    Y = np.random.default_rng(5).standard_normal((len(meta), egi_graph.n))
+    for cv in (None, ["const"]):
+        with pytest.raises(glm.GLMInputError) as e:
+            glm.plan_preset("ancova", Y, meta, group_col="group", covariate_cols=cv)
+        assert e.value.code == "ancovaNoCovariate"
+    with pytest.raises(glm.GLMInputError) as e:          # and the estimability refusal
+        glm.plan_preset("regression", Y, meta, predictor_col="logAHI",
+                        covariate_cols=["logAHI"])
+    assert e.value.code == "effectAliased"
+
+
+def test_boolean_factor_levels_are_named_as_matlab_writes_them():
+    """snpm_glm_design.m tostr writes a logical level as false/true (lowercase), so an aliased
+    boolean group level reads g_false in the column names and in the refusal."""
+    g = np.tile([True, False], 10)                     # True first: reference True, dummy g_false
+    meta = pd.DataFrame({"g": g, "same": (~g).astype(float), "age": np.arange(20.0)})
+    d = glm.build_design("ancova", meta, group_col="g", covariate_cols=["age"])
+    assert d.col_names == ["(Intercept)", "g_false", "covariate age"]
+    with pytest.raises(glm.GLMInputError) as e:
+        glm.estimability(glm.build_design("ancova", meta, group_col="g",
+                                          covariate_cols=["same"]), enforce=True)
+    assert e.value.code == "effectAliased"
+    assert "g_false is a linear combination of (Intercept), covariate same" in str(e.value)
+
+
+def test_a_text_predictor_is_refused(tmp_path):
+    """MATLAB core_snpm_glm:predictorNotNumeric: a regression slope needs a numeric predictor.
+    A text column is refused before the design is built, even when its values look like numbers
+    (read_table already reads a numeric column, blanks included, as numbers). A true/false
+    column is refused as MATLAB's readtable reads it as text; the value quoted is the first not
+    missing or blank, a boolean in lowercase as MATLAB prints a logical, text as read. Numeric
+    columns pass."""
+    from pathlib import Path
+
+    from hdeeg_snpm import pipeline
+    example = Path(__file__).resolve().parent.parent / "examples" / "data" / "glm_regression.csv"
+    meta_cols = ["Subject", "group", "logAHI", "age", "sex"]
+    with pytest.raises(glm.GLMInputError) as e:
+        pipeline.run_glm(_glm_params("regression", str(example), meta_cols,
+                                     predictor_col="group", covariate_cols=["age"]))
+    assert e.value.code == "predictorNotNumeric" and str(e.value) == (
+        "The predictor column 'group' is not numeric (it holds text such as 'OSA'); regression "
+        "needs a numeric predictor. To compare groups, use anova1 or ancova.")
+
+    n = 12
+    meta = pd.DataFrame({"x": np.arange(n, dtype=float), "flag": np.tile([True, False], n // 2),
+                         "txt": [None, "  "] + [str(v) for v in range(2, n)]})
+    meta["flag_text"] = np.where(meta["flag"], "True", "False").astype(object)
+    for col, first in (("txt", "2"), ("flag", "true"), ("flag_text", "True")):
+        with pytest.raises(glm.GLMInputError) as e:
+            glm.build_design("regression", meta, predictor_col=col)
+        assert e.value.code == "predictorNotNumeric" and str(e.value) == (
+            f"The predictor column '{col}' is not numeric (it holds text such as '{first}'); "
+            "regression needs a numeric predictor. To compare groups, use anova1 or ancova.")
+    assert glm.build_design("regression", meta, predictor_col="x").col_names == \
+        ["(Intercept)", "predictor x"]
+
+    csv = tmp_path / "blank.csv"                          # a blank cell: still numeric
+    csv.write_text("Subject,x\ns1,1.5\ns2,\ns3,2\n")
+    from hdeeg_snpm.io.tables import read_table
+    assert pd.api.types.is_float_dtype(read_table(csv)["x"])
+    csv.write_text("Subject,flag\ns1,True\ns2,False\n")    # pandas reads it as bool: refused
+    with pytest.raises(glm.GLMInputError) as e:
+        glm.build_design("regression", read_table(csv), predictor_col="flag")
+    assert e.value.code == "predictorNotNumeric" and "text such as 'true'" in str(e.value)
+
+
+def test_covariate_names_are_stripped_and_trimmed_as_matlab_does():
+    """snpm_glm_covariate_list.m: blank names dropped, kept names trimmed."""
+    assert glm.covariate_list([" age ", "", "  "]) == ["age"]
+    assert glm.covariate_list(["age", "sex"]) == ["age", "sex"]
+    assert glm.covariate_list(None) == [] and glm.covariate_list("") == []

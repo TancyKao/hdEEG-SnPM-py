@@ -528,6 +528,10 @@ def prepare_glm(params: dict):
     meta_cols = [str(c) for c in np.atleast_1d(params.get("meta_cols", []))]
     if not meta_cols:
         raise ValueError("params['meta_cols'] must list the non-channel columns.")
+    # ANCOVA with no covariate is a one-way ANOVA that would be labelled "covariate-adjusted";
+    # refused before the file is read (core_snpm_glm:ancovaNoCovariate).
+    from .glm import covariate_list, require_covariate
+    require_covariate(preset, params.get("covariate_cols"))
     path = params.get("data_file") or params.get("data1_file")
     table = tables.read_table(path, params.get("data_sheet") or params.get("data1_sheet"))
     missing_cols = [c for c in meta_cols if c not in table.columns]
@@ -545,7 +549,10 @@ def prepare_glm(params: dict):
     for k in _ROLE_KEYS:
         v = params.get(k)
         if v is not None and np.size(v):
-            cols[k] = [str(c) for c in np.atleast_1d(v)] if k == "covariate_cols" else str(v)
+            if k != "covariate_cols":
+                cols[k] = str(v)
+            elif covariate_list(v):                  # blank entries ('', ['']) name nothing
+                cols[k] = covariate_list(v)
     if preset == "mixed2way":
         absent = [k for k in ("group_col", "condition_col", "subject_col") if k not in cols]
         if absent:

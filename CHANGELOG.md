@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.7.0 (2026-10-27)
+
+Added:
+- The window reads a table file as well as TurtleWave databases: "Data source" switches between
+  "TurtleWave folder" and "Table file (CSV or Excel)". A table is read with the pipeline's own
+  reader, an Excel workbook offers its sheets, and the window shows what it detected ("Detected:
+  N channels, M other columns: …") and how many of the channels the chosen recording system
+  knows. The other columns become `meta_cols` and fill the role menus. In table mode the window
+  offers the paired, unpaired and one-sample t-tests, the one-way ANOVA, ANCOVA, regression and
+  the Pearson and Spearman correlations; a two-file analysis takes a second file (for a
+  correlation, a score table). The saved config is an ordinary one, naming `data1_file` and
+  `data2_file`, or `data_file` and `meta_cols`, with no `[turtlewave]` section.
+- ANCOVA (group column plus covariate columns) and regression (predictor column plus optional
+  covariate columns) in the window, from either source; with TurtleWave databases the columns
+  come from the subjects file. Text covariates such as sex are dummy-coded by the engine.
+- Example `examples/regression.toml` with a synthetic table, `examples/data/glm_regression.csv`
+  (40 made-up subjects with group, logAHI, age and sex; an effect planted on E129 and its
+  neighbours), made by `examples/make_regression_example.py`. It serves the regression and the
+  ANCOVA, from a config file or in the window's Table file mode.
+
+Fixed (ported from the MATLAB reference, texts shared word for word):
+- GLM presets: an effect aliased with its nuisance columns (a covariate repeating the
+  predictor, a covariate splitting subjects as the groups do, an `rmanova` condition seen only
+  in single-row subjects) gave a finite but arbitrary statistic through the pseudo-inverse. It
+  is now refused (`glm.GLMInputError`, code `effectAliased`), naming the aliased columns; this
+  applies to the main design, the three `mixed2way` effects and the simple effects. When only
+  the covariates are dependent (age and age in months) the run warns
+  (`glm.GLMNuisanceRankDeficient`) and gives the maps of the run without the redundant
+  covariate. A post-hoc pair is skipped only when its own effect is not estimable (it used to
+  be skipped on any rank deficiency) and its error degrees of freedom are n - rank(X).
+  `Design.col_names` names every design column.
+- `ancova` with no `covariate_cols` (absent, empty, `""` or `[""]`) is refused before the file
+  is read, and an `ancova` whose listed covariates are all constant or one-level on the
+  analysed rows (so the design drops every one) is refused after reading (code
+  `ancovaNoCovariate`, `glm.require_covariate`; also checked by `glm.plan_preset` when called
+  directly).
+- Mixed model: a fixed part singular on the metadata, which left every channel without a
+  statistic, is refused up front (`fixedRankDeficient`), naming the aliased coefficients.
+- Mixed model: a continuous effect resolves to exactly one coefficient (exact name, the same
+  `:`-parts in another order, or a one-coefficient term) instead of the first coefficient
+  containing it as a substring, which silently mapped another hypothesis (a three-level
+  `group` as B versus A only, `POWER` as a slope difference, `time` as `sleeptime`). A term
+  with several coefficients is refused (`ambiguousEffect`). A two-level `group` now appears in
+  the outputs as `group_B`. `LMM` matches its effect exactly.
+- Regression with a text predictor column (such as `group`) stopped with "could not convert
+  string to float". It is now refused before the design is built (`glm.GLMInputError`, code
+  `predictorNotNumeric`, MATLAB `core_snpm_glm:predictorNotNumeric`), naming the column and one
+  of its values and pointing to `anova1` or `ancova`. A text column is refused even when its
+  values look like numbers, and so is a true/false column (MATLAB's readtable reads it as
+  text; a two-level predictor is a group comparison); numeric columns pass. The window's
+  predictor menu lists only numeric columns of the table or subjects file, true/false columns
+  left out; the covariate list is unchanged.
+
 ## 0.6.1 (2026-10-26)
 
 Fixed:

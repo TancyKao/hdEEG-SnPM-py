@@ -190,6 +190,25 @@ each item on it and adds none.
   sentence (or, for `circ_corrAngLinear`, MATLAB's single reason) is kept word for word in the
   `.json` file as `circular.exclusion_reason`. The set of excluded channels is the same in both
   programs.
+- **Mixed model called directly with an effect name that is not a coefficient**: the pipeline
+  resolves the effect name before any fit, in both programs (`group` becomes `group_B` for a
+  two-level group; a name that matches nothing is refused with `unknownEffect`, listing the
+  real names). Code that skips the pipeline and calls `lmm.LMM` itself with a name that is not
+  an exact coefficient name gets the same `unknownEffect` refusal. MATLAB's `snpm_lmm_fit`,
+  called the same way, finds no matching coefficient and returns a map with no statistic at any
+  channel. A run started from a config file or the window never reaches this case.
+- **Which GLM refusal comes first when two checks fail**: an `ancova` whose covariates are all
+  constant on the analysed rows and whose table lists a subject in more than one row breaks two
+  rules. This package checks for one row per subject while reading the table, before the design
+  is built, so it stops with the one-row-per-subject error. MATLAB builds the design first and
+  checks for a covariate right after it, so it stops with `ancovaNoCovariate`. Both refuse the
+  run; when only one of the two checks fails, both programs give the same refusal.
+- **A True/False column as a regression predictor**: both programs refuse it with
+  `predictorNotNumeric` (a two-level predictor is a group comparison; use `anova1` or
+  `ancova`). The refusal quotes the column's first value. MATLAB's `readtable` reads a
+  True/False CSV column as text, so it quotes 'True'; pandas reads the same column as true/false
+  values, which this package quotes as MATLAB prints a logical, 'true'. Only the quoted value
+  differs.
 
 Channels with no variance, and non-finite cells such as the log of zero power, were once listed
 here. MATLAB now handles both the same way (the channel is excluded with a reason; a non-finite

@@ -27,11 +27,16 @@ def read_csv(path, **kwargs) -> pd.DataFrame:
 
 def read_table(path, sheet=None) -> pd.DataFrame:
     """Read a CSV file, or one sheet of an Excel workbook (``sheet=None`` or ``'CSV File'`` reads
-    CSV). Numbers are parsed so that the value equals the text exactly as MATLAB reads it."""
+    CSV). Numbers are parsed so that the value equals the text exactly as MATLAB reads it.
+    Column names are always text, so a header such as 1995 is the column ``'1995'`` wherever a
+    column is named (``meta_cols``, roles); Excel would otherwise give it as a number."""
     path = Path(path)
     if sheet in (None, "", "CSV File") and path.suffix.lower() not in (".xlsx", ".xls", ".xlsm"):
-        return read_csv(path)
-    return pd.read_excel(path, sheet_name=0 if sheet in (None, "", "CSV File") else sheet)
+        table = read_csv(path)
+    else:
+        table = pd.read_excel(path, sheet_name=0 if sheet in (None, "", "CSV File") else sheet)
+    table.columns = [str(c) for c in table.columns]
+    return table
 
 
 def subject_column(columns) -> str | None:

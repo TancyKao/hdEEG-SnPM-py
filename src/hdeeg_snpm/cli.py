@@ -45,7 +45,8 @@ def main(argv=None) -> int:
     run.add_argument("--permutations", type=int, help="override the value in the file")
     run.add_argument("--seed", type=int, help="override the value in the file")
     sub.add_parser("gui", help="open the window that runs an analysis from TurtleWave "
-                   "databases (needs PyQt5: pip install \"hdeeg-snpm[gui]\")")
+                   "databases or a CSV/Excel table (needs PyQt5: pip install "
+                   "\"hdeeg-snpm[gui]\")")
     args = parser.parse_args(argv)
     if args.command == "gui":
         from .gui import main as gui_main

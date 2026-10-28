@@ -138,7 +138,13 @@ These checks run before any model is fitted. The run stops, and says why, when:
 - the fixed part removes the intercept (`- 1`, `0`), or contains a term that cannot be read;
 - `POWER` is both the response and a fixed effect, or neither;
 - `lmm_effect` is not a term (factor) or a coefficient (continuous) of `lmm_fixed`
-  (`unknownEffect`). The message lists the terms or coefficients as `fitlme` names them: terms
+  (`unknownEffect`). A continuous effect must name exactly one coefficient: its exact name;
+  the same `:`-parts in another order (`POWER:group_B` is taken as `group_B:POWER`); or a term
+  that has a single coefficient (a two-level `group` is taken as `group_B`, and the outputs use
+  that name). A term with several coefficients (a three-level `group`) is refused as
+  `ambiguousEffect`: name one coefficient, or use `lmm_effect_type = "factor"` for the omnibus
+  F. There is no partial matching: `time` never finds `sleeptime`, and `POWER` never finds
+  `group_B:POWER`. The message lists the terms or coefficients as `fitlme` names them: terms
   joined with `:` in table order and without the intercept, coefficients as `<column>_<level>`
   for a categorical column. A factor term may be written in any variable order: `POWER:group`
   is taken as `group:POWER`, and the outputs use that name. Which level is the reference (and so
@@ -150,6 +156,12 @@ These checks run before any model is fitted. The run stops, and says why, when:
   has reference false and coefficient `<column>_1`; a numeric column is a continuous predictor.
   Under `group_label`, a coefficient of a group level that is not in the data (`group_C`) is
   refused as `unknownEffect`, with the real coefficients listed;
+- the fixed part cannot be estimated from the metadata (`fixedRankDeficient`): a column that
+  repeats another (`arm` equal to `group`), a covariate that is a linear combination of others,
+  or an interaction cell with no trials. The message names each aliased coefficient, for
+  example `arm_y is a linear combination of group_B` or `group_B:cond_r is zero on every
+  trial`. Every channel's fit would fail otherwise. Aliasing that exists only at one channel's
+  values (a channel equal to a covariate) is not refused; that channel alone has no statistic;
 - a column the model needs is not in the file;
 - fewer than 3 subjects are left once incomplete rows are dropped;
 - under `group_label`, a subject's group changes between its rows, or a group has fewer than 2

@@ -32,7 +32,10 @@ nothing may be excluded silently.
   assets by `tools/convert_matlab_assets.py`). Neighbours are 0-based, -1 padded.
 - `tfce.py`, `clusters.py`, `perm.py`: TFCE integral, connected components, permutation indices.
 - `legacy.py`: t-test and correlation engines, whole-head test, MATLAB's Spearman p-value rule.
-- `glm.py`: designs, vectorised least squares, Freedman-Lane, the loop plan of each preset.
+- `glm.py`: designs, vectorised least squares, Freedman-Lane, the loop plan of each preset,
+  and the estimability check (effect aliased with the nuisance refused, nuisance-only
+  dependency warned). `linalg.py`: rank tolerance and the left-to-right walk that names
+  aliased columns, shared by the GLM and mixed-model checks.
 - `circ.py`: circular tier statistics: angle import and zero convention, inversion check,
   Hotelling T² (observed and permuted), Watson's U², circular-linear F, the per-channel
   event-count covariate, the Tier-1 linearisation and its provenance stamp, the descriptive panel.
@@ -51,7 +54,8 @@ nothing may be excluded silently.
 - `views.py`, `output.py`, `report/`: one description of an effect, then the writers.
 - `io/tables.py`, `io/turtlewave.py`: inputs. `io/turtlewave_config.py`: the `[turtlewave]`
   section of a run config (databases to the analysis files). `cli.py`: `snpm run config.toml`.
-- `gui/form.py` (no Qt): the window's choices as `[turtlewave]` run-config params and TOML.
+- `gui/form.py` (no Qt): the window's choices as run-config params and TOML, either a
+  `[turtlewave]` section or table files (`data1_file`/`data2_file`, or `data_file` + `meta_cols`).
   `gui/window.py` (the only PyQt5 import): a thin view that calls `output.run_and_write` in a
   `QThread`; it checks nothing itself. `snpm gui` / `snpm-gui`; extra `[gui]`. Tests run with
   `QT_QPA_PLATFORM=offscreen`; `tools/gui_screenshot.py` remakes `docs/images/gui-window.png`.
@@ -110,6 +114,17 @@ none of its own.
   every excluded channel (`core_snpm_circ.m`; for the two group analyses it combines the three
   routes); the `.json` keeps that string word for word as `circular.exclusion_reason`. The
   channel sets are identical.
+- Mixed model, effect names: calling `lmm.LMM` directly with an effect that is not an exact
+  coefficient name (`group` for `group_B`) raises `unknownEffect`; MATLAB's `snpm_lmm_fit`
+  returns an all-NaN map. The pipeline never reaches this, because `check_effect` resolves the
+  name first (both languages).
+- GLM refusal order when two checks fail at once: an `ancova` whose covariates are all constant
+  and whose subjects repeat gets the one-row-per-subject error in Python (checked in
+  `prepare_glm`, before the design) and `ancovaNoCovariate` in MATLAB (checked right after
+  `snpm_glm_design`). Both refuse; a single failure gives the same refusal in both.
+- Regression with a True/False CSV predictor column: both refuse with `predictorNotNumeric`,
+  but MATLAB quotes 'True' (readtable reads the column as text) and Python quotes 'true'
+  (pandas reads it as bool, quoted as MATLAB prints a logical). Only the quoted value differs.
 
 ## Project notes
 
@@ -120,6 +135,7 @@ the dated log.
 
 ## Not ported
 
-MATLAB's App Designer GUI (the window in `gui/` covers TurtleWave databases only), spectral-power
+MATLAB's App Designer GUI (the window in `gui/` covers TurtleWave databases and single tables, not
+the repeated-measures designs, the mixed model or the circular tier), spectral-power
 folders, the 2447-voxel source path. In the mixed linear model, any random
 structure other than one random intercept, `(1|G)`.

@@ -49,6 +49,21 @@ group. The between-subject presets need exactly one row per subject and stop if 
 repeats. `mixed2way` needs every subject to have exactly one row per condition and stops,
 naming the subjects, if any does not.
 
+The run also stops when the effect cannot be told apart from the nuisance columns (the
+covariates, and the subject columns of a repeated-measures design): a covariate that repeats
+the predictor, a covariate equal to twice the predictor plus a constant, a covariate that
+splits the subjects exactly as the groups do, or an `rmanova` condition seen only in subjects
+with a single row. Its contrast would not be estimable, so any statistic would be arbitrary.
+The message names the aliased columns, for example `predictor logAHI is a linear combination
+of covariate logAHI` (`effectAliased`). When only the covariates depend on each other (age in
+years and in months), the effect is still estimable: the run warns
+(`GLMNuisanceRankDeficient`) and gives the same maps as with the redundant covariate removed.
+A pair of levels whose two-level effect is not estimable is skipped with its reason. `ancova`
+with no `covariate_cols` (or only blank names) stops before the file is read, and so does, once
+the file is read, an `ancova` whose covariates are all constant on the analysed rows (a
+constant covariate is dropped from the design): "ANCOVA needs at least one covariate; with
+none, use anova1."
+
 ## Missing values
 
 Leave the cell empty. A correlation or a group design tests a channel only if every analysed

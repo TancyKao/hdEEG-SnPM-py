@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from hdeeg_snpm import cli
+from test_gui_form import DESIGN_META, EXAMPLES, table_study
 from test_turtlewave import make_db
 from test_turtlewave_config import SUBJECTS, same, study, subjects_csv
 
@@ -78,6 +79,8 @@ def test_each_analysis_shows_its_roles(tmp_path):
     expected = {"pairedT": {"sessions"},
                 "unpairedT": {"subjects_file", "group_col", "groups", "session"},
                 "anova1": {"subjects_file", "group_col", "session"},
+                "ancova": {"subjects_file", "group_col", "covariate_cols", "session"},
+                "regression": {"subjects_file", "predictor_col", "covariate_cols", "session"},
                 "correlationP": {"subjects_file", "behavior_col", "session"},
                 "correlationS": {"subjects_file", "behavior_col", "session"}}
     for comparison, roles in expected.items():
@@ -290,3 +293,245 @@ def test_run_is_blocked_when_no_reject_set_is_shared(tmp_path):
     choose(win.measure, "count")
     assert "share a reject set" not in win.hint.text()
     win.close()
+
+
+def ticked(win):
+    return [win.covariates.item(i).text() for i in range(win.covariates.count())
+            if win.covariates.item(i).checkState() == Qt.Checked]
+
+
+def tick(win, *names):
+    for i in range(win.covariates.count()):
+        if win.covariates.item(i).text() in names:
+            win.covariates.item(i).setCheckState(Qt.Checked)
+
+
+@pytest.fixture
+def table(tmp_path):
+    table_study(tmp_path)
+    win = MainWindow()
+    choose(win.source, "table")
+    yield win, tmp_path
+    win.close()
+
+
+def test_table_source_shows_the_files_and_their_detection(table):
+    win, tmp = table
+    assert win.boxes["Study"].isHidden() and win.boxes["Events"].isHidden()
+    assert not win.boxes["Table files"].isHidden()
+    assert win.boxes["Table files"].title() == "1. Table files"
+    assert win.boxes["Analysis"].title() == "2. Analysis"
+    analyses = [win.analysis.itemData(i) for i in range(win.analysis.count())]
+    assert "onesampleT" in analyses and "regression" in analyses and "ancova" in analyses
+    choose(win.analysis, "regression")
+    assert win.file_rows[2].isHidden() and not win.file_rows[1].isHidden()
+    assert win.table_form.labelForField(win.file_rows[1]).text() == "Data file"
+    assert win.sheet[1].isHidden()                                  # a CSV has no sheets
+    win.load_table(1, tmp / "design.csv")
+    assert win.caption[1].text() == (
+        "Detected: 256 channels, 5 other columns: Subject, group, logAHI, age, sex. "
+        "177 of them are EGI 256 (HydroCel) channels.")
+    choose(win.system, "compu")
+    assert win.caption[1].text().endswith("No data columns match the Compumedics 257 (Neuvo) "
+                                          "montage labels.")
+    cols = DESIGN_META[1:]
+    assert [win.predictor_col.itemData(i) for i in range(1, win.predictor_col.count())] == \
+        ["logAHI", "age"]                                   # numeric columns only
+    assert [win.covariates.item(i).text() for i in range(win.covariates.count())] == cols
+    assert win.group_col.currentData() == "group" and win.state.meta_cols == DESIGN_META
+    choose(win.analysis, "correlationP")
+    assert not win.file_rows[2].isHidden()
+    assert win.table_form.labelForField(win.file_rows[2]).text() == "Score file"
+    assert win.boxes["Roles"].isHidden() and win.boxes["Output"].title() == "3. Output"
+    choose(win.source, "turtlewave")
+    assert win.analysis.currentData() == "correlationP" and win.boxes["Table files"].isHidden()
+    assert win.boxes["Study"].title() == "1. Study" and win.boxes["Output"].title() == "5. Output"
+
+
+def test_table_roles_per_analysis_and_run_waits_for_them(table):
+    win, tmp = table
+    expected = {"pairedT": set(), "unpairedT": set(), "onesampleT": set(),
+                "anova1": {"group_col"}, "ancova": {"group_col", "covariate_cols"},
+                "regression": {"predictor_col", "covariate_cols"},
+                "correlationP": set(), "correlationS": set()}
+    for comparison, roles in expected.items():
+        choose(win.analysis, comparison)
+        assert {k for k in win.role_rows if shown(win, k)} == roles, comparison
+    win.load_table(1, tmp / "design.csv")
+    win.out_edit.setText(str(tmp / "out"))
+    choose(win.analysis, "regression")
+    assert not win.run_btn.isEnabled() and "a predictor column" in win.hint.text()
+    choose(win.predictor_col, "logAHI")
+    assert win.run_btn.isEnabled()
+    choose(win.analysis, "ancova")
+    assert not win.run_btn.isEnabled() and "at least one covariate column" in win.hint.text()
+    tick(win, "age", "sex")
+    assert win.run_btn.isEnabled()
+    assert win.state.to_params()["covariate_cols"] == ["age", "sex"]
+    choose(win.analysis, "unpairedT")
+    assert "a group 2 file" in win.hint.text() and not win.run_btn.isEnabled()
+    win.load_table(2, tmp / "condB.csv")
+    assert win.run_btn.isEnabled()
+
+
+def test_an_excel_sheet_is_chosen_and_read(table):
+    win, tmp = table
+    choose(win.analysis, "regression")
+    win.load_table(1, tmp / "design.xlsx")
+    assert not win.sheet[1].isHidden()
+    assert [win.sheet[1].itemData(i) for i in range(win.sheet[1].count())] == ["notes", "data"]
+    assert win.caption[1].text() == "Detected: 0 channels, 1 other column: note."
+    choose(win.sheet[1], "data")
+    assert win.caption[1].text().startswith("Detected: 256 channels, 5 other columns")
+    assert win.state.data1_sheet == "data" and win.state.meta_cols == DESIGN_META
+    choose(win.predictor_col, "logAHI")
+    tick(win, "age")
+    win.file_edit[1].editingFinished.emit()               # unchanged field: nothing re-read
+    assert win.sheet[1].currentData() == "data" and ticked(win) == ["age"]
+    win.out_edit.setText(str(tmp / "out"))
+    params = win.state.to_params()
+    assert params["data_file"] == str(tmp / "design.xlsx") and params["data_sheet"] == "data"
+    win.load_table(1, tmp / "design.csv")                 # a CSV: no sheet any more
+    assert win.sheet[1].isHidden() and "data_sheet" not in win.state.to_params()
+    assert win.predictor_col.currentData() == "logAHI" and ticked(win) == ["age"]
+
+
+def test_a_table_typed_but_not_read_is_not_used(table):
+    win, tmp = table
+    choose(win.analysis, "regression")
+    win.load_table(1, tmp / "design.csv")
+    choose(win.predictor_col, "logAHI")
+    win.out_edit.setText(str(tmp / "out"))
+    assert win.run_btn.isEnabled()
+    win.file_edit[1].setText(str(tmp / "design.xlsx"))     # typed, not yet read
+    assert not win.run_btn.isEnabled() and not win.save_btn.isEnabled()
+    assert "a data file (press Enter or Load" in win.hint.text()
+    assert "data_file" not in win.state.to_params()
+    win.load_table(1)                                       # Enter in the field
+    assert win.state.data1_file == str(tmp / "design.xlsx")
+    win.file_edit[1].setText(str(tmp / "nothing.csv"))
+    win.load_table(1)
+    assert win.caption[1].text().startswith("Could not read the file:")
+    assert not win.run_btn.isEnabled()
+
+
+def test_a_table_regression_from_the_window_equals_the_saved_config(table):
+    win, tmp = table
+    choose(win.analysis, "regression")
+    win.load_table(1, tmp / "design.csv")
+    choose(win.predictor_col, "logAHI")
+    tick(win, "age", "sex")
+    win.out_edit.setText(str(tmp / "out"))
+    win.permutations.setValue(100)
+    win.seed.setText("7")
+    win.save_config(tmp / "saved.toml")
+    win.start_run()
+    wait(win)
+    assert win.paths is not None, win.log.toPlainText()
+    assert all(p.is_file() for p in win.paths.values()) and len(win.paths) == 4
+    text = (tmp / "saved.toml").read_text()
+    assert "[turtlewave]" not in text and 'covariate_cols = ["age", "sex"]' in text
+    out = json.dumps(str((tmp / "out").resolve()))
+    (tmp / "cli.toml").write_text(text.replace(out, json.dumps(str(tmp / "cli_out"))))
+    assert cli.main(["run", str(tmp / "cli.toml")]) == 0
+    same(np.load(win.paths["npz"]), np.load(next((tmp / "cli_out").glob("*.npz"))))
+
+
+def test_a_table_refusal_comes_from_the_pipeline(table):
+    win, tmp = table
+    choose(win.analysis, "pairedT")
+    win.load_table(1, tmp / "design.csv")                   # carries non-channel columns
+    win.load_table(2, tmp / "condB.csv")
+    win.out_edit.setText(str(tmp / "out"))
+    win.permutations.setValue(100)
+    assert win.run_btn.isEnabled()
+    win.start_run()
+    wait(win)
+    assert win.paths is None and "Stopped:" in win.log.toPlainText()
+    assert "do not list the same channels" in win.error_box.text()
+    win.error_box.close()
+
+
+def test_turtlewave_regression_roles_come_from_the_subjects_file(unpaired):
+    win, tmp = unpaired
+    subjects_csv(tmp / "subjects.csv", group=["A", "B"] * 6, score=np.linspace(0, 1, 12),
+                 age=np.arange(20, 32) % 7)
+    win.load_subjects(tmp / "subjects.csv")
+    choose(win.analysis, "regression")
+    assert [win.predictor_col.itemData(i) for i in range(1, win.predictor_col.count())] == \
+        ["score", "age"]                                    # not the text column group
+    win.out_edit.setText(str(tmp / "out"))
+    assert "a predictor column" in win.hint.text()
+    choose(win.predictor_col, "score")
+    tick(win, "age")
+    assert win.run_btn.isEnabled()
+    params = win.state.to_params()
+    assert params["predictor_col"] == "score" and params["covariate_cols"] == ["age"]
+    assert "turtlewave" in params and "meta_cols" not in params
+
+
+def test_the_predictor_menu_offers_only_numeric_columns(tmp_path):
+    """On the shipped regression example the predictor menu offers logAHI and age, not the text
+    columns group and sex, and starts on its placeholder rather than on a text column."""
+    win = MainWindow()
+    choose(win.source, "table")
+    choose(win.analysis, "regression")
+    win.load_table(1, EXAMPLES / "glm_regression.csv")
+    assert win.predictor_col.currentIndex() == 0 and "a predictor column" in win.hint.text()
+    assert [win.predictor_col.itemData(i) for i in range(1, win.predictor_col.count())] == \
+        ["logAHI", "age"]
+    choose(win.predictor_col, "logAHI")
+    assert [win.covariates.item(i).text() for i in range(win.covariates.count())] == \
+        ["group", "age", "sex"]
+    win.close()
+
+
+def test_the_effect_of_interest_is_not_offered_as_a_covariate(table):
+    win, tmp = table
+    choose(win.analysis, "regression")
+    win.load_table(1, tmp / "design.csv")
+    tick(win, "age", "sex")
+    choose(win.predictor_col, "age")
+    assert [win.covariates.item(i).text() for i in range(win.covariates.count())] == \
+        ["group", "logAHI", "sex"]
+    assert ticked(win) == ["sex"] and win.state.covariate_cols == ["sex"]
+    choose(win.predictor_col, "logAHI")                      # age comes back, not ticked
+    assert ticked(win) == ["sex"] and "logAHI" not in \
+        [win.covariates.item(i).text() for i in range(win.covariates.count())]
+    choose(win.analysis, "ancova")
+    assert win.group_col.currentData() == "group"
+    assert "group" not in [win.covariates.item(i).text() for i in range(win.covariates.count())]
+    assert "logAHI" in [win.covariates.item(i).text() for i in range(win.covariates.count())]
+
+
+def test_the_sheet_menu_belongs_to_the_file_read(table):
+    win, tmp = table
+    choose(win.analysis, "regression")
+    win.load_table(1, tmp / "design.xlsx")
+    choose(win.sheet[1], "data")
+    win.file_edit[1].setText(str(tmp / "design.csv"))       # typed, not read
+    assert win.sheet[1].isHidden()
+    win.sheet[1].setCurrentIndex(win.sheet[1].findData("notes"))
+    assert win.loaded_table[1] == str(tmp / "design.xlsx") and win.columns[1] != ["note"]
+    assert win.file_edit[1].text() == str(tmp / "design.csv")
+    win.file_edit[1].setText(str(tmp / "design.xlsx"))      # back to the file read
+    assert not win.sheet[1].isHidden()
+
+
+def test_a_second_file_read_for_another_analysis_is_not_sent(table):
+    win, tmp = table
+    choose(win.analysis, "pairedT")
+    win.load_table(1, tmp / "condA.csv")
+    win.load_table(2, tmp / "condB.csv")
+    win.out_edit.setText(str(tmp / "out"))
+    assert win.run_btn.isEnabled() and win.state.data2_file == str(tmp / "condB.csv")
+    choose(win.analysis, "regression")                      # one file: the second is kept
+    choose(win.analysis, "pairedT")
+    assert win.state.data2_file == str(tmp / "condB.csv")
+    choose(win.analysis, "correlationP")                    # now a score file: cleared
+    assert win.file_edit[2].text() == "" and win.state.data2_file == ""
+    assert "data2_file" not in win.state.to_params() and not win.run_btn.isEnabled()
+    assert "a score file" in win.hint.text()
+    win.load_table(2, tmp / "scores.csv")
+    choose(win.analysis, "correlationS")                    # same meaning: kept
+    assert win.state.to_params()["data2_file"] == str(tmp / "scores.csv")

@@ -41,6 +41,7 @@ from scipy import stats
 from . import perm as _perm
 from .clusters import ChannelGraph, find_clusters
 from .legacy import ZERO_SS_RTOL, _at_least, _fwe_p, _sort_desc
+from .linalg import aliased_columns, rank_tol
 from .tfce import tfce
 
 EFFECT_TYPES = ("continuous", "factor")
@@ -208,24 +209,49 @@ def _cross(names_so_far: list, names_v: list) -> list:
     return [f"{a}:{b}" if a else b for b in names_v for a in names_so_far]
 
 
+def _fixed(meta: pd.DataFrame, spec: LMMSpec):
+    """Coefficients, terms, the term index of each coefficient (-1 for the intercept) and the
+    fixed design X (rows of ``meta``, columns in coefficient order, ``POWER`` at the placeholder
+    ``sin(i) + i/n``, i = 1..n, as ``snpm_lmm_check_effect.m`` sets it). X is None when a
+    variable of the fixed part is not a column of ``meta``."""
+    cols = [str(c) for c in meta.columns if c != "POWER"]
+    terms = _terms(spec.fixed, cols)
+    cats = _default_categorical(spec)
+    n = len(meta)
+    i = np.arange(1, n + 1, dtype=float)
+    placeholder = np.sin(i) + i / max(n, 1)
+    buildable = all(v == "POWER" or v in meta.columns for t in terms for v in t)
+    coefs, coef_term = ["(Intercept)"], [-1]
+    X = [np.ones(n)]
+    for k, t in enumerate(terms):
+        nm, xs = [""], [np.ones(n)]
+        for v in t:
+            code = (None if v == "POWER" or v not in meta.columns
+                    else factor_coding(meta[v], v in cats))
+            if code is None:
+                nv = [v]
+                cv = [placeholder if v == "POWER" else
+                      (meta[v].to_numpy(dtype=float) if buildable else np.zeros(n))]
+            else:
+                nv = [f"{v}_{lb}" for lb in code[1][1:]]
+                col = meta[v].to_numpy()
+                cv = [(col == lv).astype(float) for lv in code[0][1:]]
+            nm = _cross(nm, nv)
+            xs = [a * b for b in cv for a in xs]          # first variable fastest (fitlme)
+        coefs += nm
+        coef_term += [k] * len(nm)
+        X += xs
+    return (coefs, [":".join(t) for t in terms], coef_term,
+            np.column_stack(X) if buildable else None)
+
+
 def fixed_names(meta: pd.DataFrame, spec: LMMSpec) -> tuple[list[str], list[str]]:
     """``(coefficients, terms)`` of the fixed part as fitlme names them, built from the metadata
     without a fit (``snpm_lmm_check_effect.m``): the channel is the last variable, ``POWER``;
     terms in fitlme's order without the intercept, ':'-joined; a categorical variable contributes
     reference-coded columns ``<var>_<level>`` for every level after the first."""
-    cols = [str(c) for c in meta.columns if c != "POWER"]
-    terms = _terms(spec.fixed, cols)
-    cats = _default_categorical(spec)
-    coefs = ["(Intercept)"]
-    for t in terms:
-        nm = [""]
-        for v in t:
-            code = (None if v == "POWER" or v not in meta.columns
-                    else factor_coding(meta[v], v in cats))
-            nv = [v] if code is None else [f"{v}_{lb}" for lb in code[1][1:]]
-            nm = _cross(nm, nv)
-        coefs += nm
-    return coefs, [":".join(t) for t in terms]
+    coefs, terms, _, _ = _fixed(meta, spec)
+    return coefs, terms
 
 
 def _unknown_effect(spec: LMMSpec, coefs, terms):
@@ -303,16 +329,27 @@ def _check_group_token(spec: LMMSpec, grp_coef=None, columns=()):
 
 def check_effect(meta: pd.DataFrame, spec: LMMSpec) -> str:
     """Refuse, from the metadata alone and before any fit, an effect the permutation cannot test
-    or the fixed part does not contain (``snpm_lmm_check_effect.m`` with the metadata).
+    or the fixed part does not contain, or a fixed part the metadata cannot estimate
+    (``snpm_lmm_check_effect.m`` with the metadata). Returns the effect as fitlme names it.
 
     Under group_label a token must be the group column or one of its coefficients
     (``effectNotPermuted``; another column such as ``group_size`` is refused, a level not in the
     data such as ``group_C`` falls to ``unknownEffect``). Names and reference levels come from
-    :func:`factor_coding`, as the fit uses them. The effect
-    must name a coefficient (continuous: exact name, else the first name containing it) or a term
-    (factor: same variables in any order) of the fixed part (``unknownEffect``). Returns the
-    effect as fitlme names it: for a factor ``POWER:group`` this is ``group:POWER``."""
-    coefs, terms = fixed_names(meta, spec)
+    :func:`factor_coding`, as the fit uses them.
+
+    A factor effect must name a term of the fixed part, its variables in any order (``POWER:group``
+    returns ``group:POWER``). A continuous effect resolves to ONE coefficient by the first rule
+    that applies (parts = the effect split on ':'): the effect is a coefficient name; the parts,
+    sorted, equal the sorted ':'-parts of exactly one coefficient (``POWER:group_B`` ->
+    ``group_B:POWER``); the parts, sorted, equal the sorted variables of exactly one term, which
+    has one coefficient (``group`` -> ``group_B`` for a two-level group) or else is refused
+    (``ambiguousEffect``); otherwise ``unknownEffect``. There is no substring matching.
+
+    The fixed design X (coefficient order, ``POWER`` at its placeholder) must have full column
+    rank at ``tol = max(X.shape) * eps * s_max(X)`` (``fixedRankDeficient``); the aliased columns
+    are named by a left-to-right walk. A deficiency at the generic placeholder holds at every
+    channel; aliasing only at particular channel values stays a per-channel NaN."""
+    coefs, terms, coef_term, X = _fixed(meta, spec)
     if spec.perm == "group_label":
         g = spec.group
         cols = [str(c) for c in meta.columns]
@@ -327,13 +364,56 @@ def check_effect(meta: pd.DataFrame, spec: LMMSpec) -> str:
         _check_group_token(spec, grp_coef, cols)
     if spec.effect_type == "factor":
         want = sorted(v.strip() for v in spec.effect.split(":"))
-        for t in terms:
-            if sorted(t.split(":")) == want:
-                return t
-        raise _unknown_effect(spec, coefs, terms)
-    if spec.effect not in coefs and not any(spec.effect in c for c in coefs):
-        raise _unknown_effect(spec, coefs, terms)
-    return spec.effect
+        hit = [t for t in terms if sorted(t.split(":")) == want]
+        if not hit:
+            raise _unknown_effect(spec, coefs, terms)
+        effect = hit[0]
+    else:
+        effect = _resolve_coefficient(spec, coefs, terms, coef_term)
+    if X is not None:
+        _check_rank(X, coefs, spec.fixed)
+    return effect
+
+
+def _resolve_coefficient(spec: LMMSpec, coefs, terms, coef_term) -> str:
+    """One coefficient for a continuous effect: exact name, else the same ':'-parts in another
+    order, else the variables of a one-coefficient term (``snpm_lmm_check_effect.m``)."""
+    e = spec.effect
+    if e in coefs:
+        return e
+    want = sorted(v.strip() for v in e.split(":"))
+    hit = [c for c in coefs if sorted(c.split(":")) == want]
+    if len(hit) == 1:
+        return hit[0]
+    t = [k for k, s in enumerate(terms) if sorted(s.split(":")) == want]
+    if len(t) == 1:
+        cs = [c for c, k in zip(coefs, coef_term) if k == t[0]]
+        if len(cs) == 1:
+            return cs[0]
+        if len(cs) > 1:
+            raise LMMInputError(
+                "ambiguousEffect",
+                f"Effect '{e}' names the term '{terms[t[0]]}' of the fixed part '{spec.fixed}', "
+                f"which has {len(cs)} coefficients ({', '.join(cs)}); a continuous effect maps "
+                "one coefficient. Name one of them, or set lmm_effect_type = 'factor' for the "
+                "omnibus F.")
+    raise _unknown_effect(spec, coefs, terms)
+
+
+def _check_rank(X: np.ndarray, coefs, fixed: str):
+    """``fixedRankDeficient`` when the fixed design is singular on the metadata (fitlme would
+    refuse every channel); MATLAB's text word for word."""
+    if X.size == 0:
+        return
+    tol = rank_tol(X)
+    if np.linalg.matrix_rank(X, tol) == X.shape[1]:
+        return
+    _, items = aliased_columns(X, coefs, range(X.shape[1]), tol, "is zero on every trial")
+    raise LMMInputError(
+        "fixedRankDeficient",
+        f"The fixed part '{fixed}' cannot be estimated from these trials: "
+        f"{'; '.join(i for _, i in items)}. fitlme refuses a rank-deficient design, so every "
+        "channel would be NaN. Remove or recode the redundant column, or drop the term.")
 
 
 def effect_within_share(meta: pd.DataFrame, effect: str, subject: str) -> float:
@@ -598,12 +678,10 @@ class LMM:
             for t, cols in zip(self.terms, self.term_cols):
                 if sorted(t) == want:
                     return cols
-        else:
-            if e in self.names:
-                return [self.names.index(e)]
-            hit = [i for i, n in enumerate(self.names) if e in n]   # MATLAB: contains(names, e)
-            if hit:
-                return hit[:1]
+        elif e in self.names:
+            # exact only: the effect is the coefficient check_effect resolved (snpm_lmm_fit.m
+            # has no substring fallback either)
+            return [self.names.index(e)]
         raise _unknown_effect(self.spec, self.names, [":".join(t) for t in self.terms])
 
     def design(self, power: np.ndarray, meta: pd.DataFrame | None = None):

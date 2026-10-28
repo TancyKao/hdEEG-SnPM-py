@@ -96,7 +96,11 @@ def test_factor_f_is_the_marginal_wald_test_with_residual_df():
     # one-df factor: F equals the square of the coefficient's t
     two = LMM(meta.assign(group=np.where(meta["group"] == "G1", "G1", "G2")),
               LMMSpec(dv="DV", fixed="POWER + group", effect="group", effect_type="factor"))
-    cont = LMM(two.meta, LMMSpec(dv="DV", fixed="POWER + group", effect="group",
+    # the two-level shorthand 'group' resolves to its one coefficient, group_G2 (check_effect);
+    # the fit itself matches the resolved name exactly
+    sp = LMMSpec(dv="DV", fixed="POWER + group", effect="group", effect_type="continuous")
+    assert lmm.check_effect(two.meta, sp) == "group_G2"
+    cont = LMM(two.meta, LMMSpec(dv="DV", fixed="POWER + group", effect="group_G2",
                                  effect_type="continuous"))
     assert two.fit(power).stat == pytest.approx(cont.fit(power).stat ** 2, rel=1e-10)
 
@@ -755,10 +759,10 @@ def test_unknown_effect_is_refused_with_the_names_of_the_fixed_part(tmp_path):
     for c in coefs:
         assert lmm.check_effect(m, LMMSpec(dv="DV", fixed=fx, effect=c,
                                            effect_type="continuous")) == c
-    with pytest.raises(lmm.LMMInputError) as e:       # not fitlme's order
-        lmm.check_effect(m, LMMSpec(dv="DV", fixed=fx, effect="cond_y:group3_B",
-                                    effect_type="continuous", perm="within_subject"))
-    assert e.value.code == "unknownEffect"
+    # not fitlme's order: the same parts in another order name that one coefficient
+    assert lmm.check_effect(m, LMMSpec(dv="DV", fixed=fx, effect="cond_y:group3_B",
+                                       effect_type="continuous",
+                                       perm="within_subject")) == "group3_B:cond_y"
     for t in terms:
         assert lmm.check_effect(m, LMMSpec(dv="DV", fixed=fx, effect=t, effect_type="factor",
                                            perm="within_subject")) == t
@@ -990,3 +994,167 @@ def test_level_coding_follows_snpm_lmm_categorize():
     fl = meta.assign(flag=np.repeat(np.arange(10) % 2 == 0, 6))
     assert lmm.fixed_names(fl, LMMSpec(dv="DV", fixed="POWER + flag", effect="flag_1",
                                        effect_type="continuous"))[0][1] == "flag_1"
+
+
+# ----------------------------------------------------------------- MATLAB T29-T30 (2026-10-26)
+
+_RANK_TAIL = (". fitlme refuses a rank-deficient design, so every channel would be NaN. Remove or "
+              "recode the redundant column, or drop the term.")
+
+
+def _rank_fixture():
+    """12 subjects x 6 trials: arm == group, cov2 = 2*cov1 + 3, cond with an empty B:r cell."""
+    rng = np.random.default_rng(290)
+    n_s, n_t = 12, 6
+    n = n_s * n_t
+    subj = np.repeat(np.arange(1, n_s + 1), n_t)
+    group = np.where(subj > 6, "B", "A")
+    cov1 = rng.standard_normal(n)
+    cond = np.tile(["p", "q", "r"], n // 3).astype(object)
+    cond[(group == "B") & (cond == "r")] = "q"
+    return pd.DataFrame({"Subject": subj, "group": group, "arm": np.where(subj > 6, "y", "x"),
+                         "cov1": cov1, "cov2": 2 * cov1 + 3, "cond": cond,
+                         "DV": rng.standard_normal(n_s)[subj - 1] + rng.standard_normal(n)})
+
+
+def test_fixed_part_rank_deficient_on_the_metadata_is_refused(tmp_path):
+    """MATLAB T29: a fixed part singular on the metadata alone would leave every channel NaN
+    (fitlme refuses the fit); it is refused up front, naming the aliased columns. Aliasing only
+    at one channel's values (a channel equal to a covariate) stays a per-channel NaN."""
+    from hdeeg_snpm import lmm_pipeline
+    from hdeeg_snpm.linalg import rank_tol
+    from hdeeg_snpm.montage import get_montage
+
+    meta = _rank_fixture()
+    cases = [
+        ("DV", "POWER + group + arm", "POWER", "continuous", "within_subject",
+         "arm_y is a linear combination of group_B"),
+        ("DV", "POWER + cov1 + cov2", "POWER", "continuous", "within_subject",
+         "cov2 is a linear combination of (Intercept), cov1"),
+        ("DV", "POWER*group + POWER:arm", "POWER", "continuous", "within_subject",
+         "arm_y:POWER is a linear combination of group_B:POWER"),
+        ("DV", "POWER + group*cond", "POWER", "continuous", "within_subject",
+         "group_B:cond_r is zero on every trial"),
+        ("POWER", "group + arm", "group", "factor", "group_label",
+         "arm_y is a linear combination of group_B"),
+        ("DV", "POWER:group + POWER:arm", "group:POWER", "factor", "within_subject",
+         "arm_y:POWER is a linear combination of group_B:POWER"),
+    ]
+    for dv, fx, eff, et, perm, item in cases:
+        sp = LMMSpec(dv=dv, fixed=fx, effect=eff, effect_type=et, perm=perm)
+        with pytest.raises(lmm.LMMInputError) as e:
+            lmm.check_effect(meta, sp)
+        assert e.value.code == "fixedRankDeficient"
+        assert str(e.value) == (f"The fixed part '{fx}' cannot be estimated from these trials: "
+                                f"{item}{_RANK_TAIL}")
+        # one item per lost dimension, and the walk keeps exactly rank(X, tol) columns
+        _, _, _, X = lmm._fixed(meta, sp)
+        r = np.linalg.matrix_rank(X, rank_tol(X))
+        assert str(e.value).count("; ") + 1 == X.shape[1] - r
+        kept, _ = lmm.aliased_columns(X, lmm.fixed_names(meta, sp)[0], range(X.shape[1]),
+                                      rank_tol(X), "is zero on every trial")
+        assert len(kept) == r
+
+    # through the pipeline, under each scheme, before any channel is read
+    labels = get_montage("egi").labels
+    rng = np.random.default_rng(291)
+    path = _write(tmp_path, meta, 10 + rng.standard_normal((len(meta), len(labels))), labels)
+    base = _params(path, lmm_meta_cols=["Subject", "group", "arm", "cov1", "cov2", "cond", "DV"])
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm_pipeline.prepare(dict(base, lmm_fixed="POWER + group + arm"))
+    assert e.value.code == "fixedRankDeficient"
+    assert str(e.value) == ("The fixed part 'POWER + group + arm' cannot be estimated from these "
+                            "trials: arm_y is a linear combination of group_B" + _RANK_TAIL)
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm_pipeline.prepare(dict(base, lmm_dv="POWER", lmm_fixed="group + arm",
+                                  lmm_effect="group", lmm_effect_type="factor",
+                                  lmm_perm="group_label"))
+    assert e.value.code == "fixedRankDeficient"
+    assert str(e.value) == ("The fixed part 'group + arm' cannot be estimated from these "
+                            "trials: arm_y is a linear combination of group_B" + _RANK_TAIL)
+
+    # full-rank control: passes the check and every channel fits
+    sp = LMMSpec(dv="DV", fixed="POWER + group + cov1", effect="POWER", effect_type="continuous")
+    assert lmm.check_effect(meta, sp) == "POWER"
+    power = rng.standard_normal((len(meta), 6))
+    assert np.isfinite(LMM(meta, sp).fit(power).stat).all()
+    # a channel equal to a covariate is not refused (the metadata are full rank): that channel
+    # alone is NaN / Wald 0 and every other channel is unchanged
+    sp = LMMSpec(dv="DV", fixed="POWER + cov1", effect="POWER", effect_type="continuous")
+    assert lmm.check_effect(meta, sp) == "POWER"
+    f1 = LMM(meta, sp).fit(power)
+    p2 = power.copy()
+    p2[:, 2] = meta["cov1"]
+    f2 = LMM(meta, sp).fit(p2)
+    assert np.isfinite(f1.stat).all()
+    assert np.isnan(f2.stat[2]) and f2.wald[2] == 0
+    keep = [0, 1, 3, 4, 5]
+    assert np.array_equal(f2.stat[keep], f1.stat[keep])
+    assert np.array_equal(f2.wald[keep], f1.wald[keep])
+
+
+def test_continuous_effect_resolves_to_exactly_one_coefficient(tmp_path):
+    """MATLAB T30: exact name, else the same ':'-parts in another order, else a term with one
+    coefficient; a term with several is ambiguousEffect, anything else unknownEffect. No
+    substring matching, in the check or in the fit."""
+    from hdeeg_snpm import lmm_pipeline
+    from hdeeg_snpm.montage import get_montage
+
+    rng = np.random.default_rng(2)
+    n_s, n_t = 12, 6
+    n = n_s * n_t
+    subj = np.repeat(np.arange(1, n_s + 1), n_t)
+    meta = pd.DataFrame({"Subject": subj, "group": np.where(subj > 6, "B", "A"),
+                         "time": rng.standard_normal(n), "sleeptime": rng.standard_normal(n),
+                         "DV": rng.standard_normal(n), "visit": np.tile([1, 2, 3], n // 3)})
+    m3 = meta.assign(group=np.select([subj > 8, subj > 4], ["C", "B"], "A"))
+    amb = ("Effect 'group' names the term 'group' of the fixed part 'POWER + group', which has 2 "
+           "coefficients (group_B, group_C); a continuous effect maps one coefficient. Name one "
+           "of them, or set lmm_effect_type = 'factor' for the omnibus F.")
+    U = "unknownEffect"
+    cases = [(meta, "POWER + group", "group", "group_B"),
+             (m3, "POWER + group", "group", amb),
+             (meta, "POWER + group", "group_B", "group_B"),
+             (meta, "POWER*group", "POWER:group_B", "group_B:POWER"),
+             (meta, "POWER*group", "POWER:group", "group_B:POWER"),
+             (meta, "group + group:POWER", "POWER", U),
+             (meta, "POWER + sleeptime", "time", U),
+             (meta, "POWER + group", "group_A", U),
+             (meta, "POWER + time", "POWER", "POWER")]
+    for m, fx, eff, want in cases:
+        sp = LMMSpec(dv="DV", fixed=fx, effect=eff, effect_type="continuous",
+                     perm="within_subject")
+        if want == U or want == amb:
+            with pytest.raises(lmm.LMMInputError) as e:
+                lmm.check_effect(m, sp)
+            assert e.value.code == (U if want == U else "ambiguousEffect"), (fx, eff)
+            if want == amb:
+                assert str(e.value) == amb
+        else:
+            assert lmm.check_effect(m, sp) == want, (fx, eff)
+
+    # the two-level shorthand maps the same t as naming group_B; the fit itself matches the
+    # resolved name exactly (MATLAB's fit returns NaN for an unresolved name, this one refuses)
+    power = rng.standard_normal((n, 3))
+    sp = LMMSpec(dv="DV", fixed="POWER + group", effect="group", effect_type="continuous")
+    resolved = LMMSpec(dv="DV", fixed="POWER + group", effect=lmm.check_effect(meta, sp),
+                       effect_type="continuous")
+    named = LMMSpec(dv="DV", fixed="POWER + group", effect="group_B", effect_type="continuous")
+    assert np.array_equal(LMM(meta, resolved).fit(power).stat, LMM(meta, named).fit(power).stat)
+    with pytest.raises(lmm.LMMInputError) as e:
+        LMM(meta, sp)
+    assert e.value.code == U
+
+    # a coefficient part maps to ITS column by prefix (cond_post -> cond), not to the first
+    # column of the table (the MATLAB startsWith bug fixed alongside)
+    mc = meta.assign(cond=np.tile(["pre", "post"], n // 2))
+    assert lmm.effect_within_share(mc, "cond_post", "Subject") > 1e-6
+
+    # through the pipeline: the ambiguous 3-level effect is refused before any channel is read
+    labels = get_montage("egi").labels
+    path = _write(tmp_path, m3, 10 + rng.standard_normal((n, len(labels))), labels)
+    with pytest.raises(lmm.LMMInputError) as e:
+        lmm_pipeline.prepare(_params(
+            path, lmm_meta_cols=["Subject", "group", "time", "sleeptime", "DV", "visit"],
+            lmm_fixed="POWER + group", lmm_effect="group", lmm_perm="group_label"))
+    assert e.value.code == "ambiguousEffect" and str(e.value) == amb

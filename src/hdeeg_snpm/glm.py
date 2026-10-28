@@ -21,6 +21,7 @@ from scipy import stats
 from . import perm as _perm
 from .clusters import ChannelGraph, find_clusters
 from .legacy import ZERO_SS_RTOL, _at_least, _fwe_p, _sort_desc
+from .linalg import aliased_columns, rank_tol
 from .tfce import tfce
 
 PRESETS = ("anova1", "ancova", "regression", "rmanova", "mixed2way")
@@ -36,6 +37,68 @@ NO_ERROR_DF = "no error degrees of freedom left after fitting the design"
 
 class NoErrorDF(ValueError):
     """The design leaves no error degrees of freedom (rows - rank(X) < 1)."""
+
+
+class GLMInputError(ValueError):
+    """Unusable GLM input; ``code`` is the suffix of MATLAB's ``core_snpm_glm:`` identifier
+    (``effectAliased``, ``ancovaNoCovariate``, ``predictorNotNumeric``)."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class GLMNuisanceRankDeficient(UserWarning):
+    """MATLAB ``snpm:glmNuisanceRankDeficient``: the nuisance columns are linearly dependent but
+    the effect is estimable, so the analysis runs."""
+
+
+ANCOVA_NO_COVARIATE = "ANCOVA needs at least one covariate; with none, use anova1."
+
+
+def covariate_list(cols) -> list[str]:
+    """``covariate_cols`` as a list of names, blank entries dropped (None, '', [''] -> []) and
+    the rest trimmed (' age ' -> 'age'), as ``snpm_glm_covariate_list.m``."""
+    if cols is None:
+        return []
+    return [str(c).strip() for c in np.atleast_1d(cols) if str(c).strip()]
+
+
+def require_covariate(preset: str, covariate_cols=None, design: Design | None = None):
+    """``ancovaNoCovariate`` (``snpm_glm_require_covariate.m``): an ANCOVA without a covariate
+    is a one-way ANOVA labelled covariate-adjusted. Without ``design`` (before the data are
+    read) it refuses when ``covariate_cols`` names no column; with it, when the design kept no
+    covariate column, every listed one being constant or one-level on these rows. Any other
+    preset passes."""
+    if preset.lower() != "ancova":
+        return
+    if design is not None:
+        none = not any(nm.startswith("covariate ") for nm in design.col_names)
+    else:
+        none = not covariate_list(covariate_cols)
+    if none:
+        raise GLMInputError("ancovaNoCovariate", ANCOVA_NO_COVARIATE)
+
+
+def require_numeric_predictor(column, name):
+    """``predictorNotNumeric``: a regression slope needs a numeric predictor. Numeric columns
+    pass. A text column is refused even when its values look like numbers, because
+    ``read_table`` already reads a numeric column (blanks included) as numbers. A true/false
+    column is refused too: MATLAB's readtable reads it as text, and a two-level predictor is a
+    group comparison. The value quoted is the first one not missing or blank, as text; a
+    boolean column is quoted as MATLAB prints a logical ('true', 'false'), text as read."""
+    column = pd.Series(column)
+    is_bool = pd.api.types.is_bool_dtype(column)
+    if pd.api.types.is_numeric_dtype(column) and not is_bool:
+        return
+    first = next((str(v).strip() for v in column
+                  if not pd.isna(v) and str(v).strip()), "")
+    if is_bool:
+        first = first.lower()
+    raise GLMInputError(
+        "predictorNotNumeric",
+        f"The predictor column '{name}' is not numeric (it holds text such as '{first}'); "
+        "regression needs a numeric predictor. To compare groups, use anova1 or ancova.")
 
 
 def _require_error_df(X: np.ndarray, name: str):
@@ -62,6 +125,10 @@ class Design:
     # test on the rows of a and b only (see ``plan_preset``).
     posthoc: list[tuple[str, object, object]] = field(default_factory=list)
     factor_col: str | None = None
+    # One name per column of X, for messages (snpm_glm_design.m col_names): '(Intercept)';
+    # 'predictor <col>'; 'covariate <col>' or 'covariate <col>_<level>'; '<factor>_<level>';
+    # '<group>_<l>:<condition>_<l>'.
+    col_names: list[str] = field(default_factory=list)
 
     @property
     def contrast_type(self) -> str:
@@ -97,26 +164,50 @@ def _no_missing(column, name):
                          "a row without a design value cannot enter the model.")
 
 
-def _covariates(meta: pd.DataFrame, cols) -> np.ndarray:
+def _covariates(meta: pd.DataFrame, cols) -> tuple[np.ndarray, list[str]]:
     """Numeric covariates as they are; other columns dummy-coded with the alphabetically first
-    level as reference. Every column is mean-centred."""
+    level as reference. Every column is mean-centred. Also returns one name per column
+    ('covariate <col>' or 'covariate <col>_<level>')."""
     if cols is None or len(cols) == 0:
-        return np.empty((len(meta), 0))
+        return np.empty((len(meta), 0)), []
     if isinstance(cols, str):
         cols = [cols]
-    parts = []
+    parts, names = [], []
     for c in cols:
         v = meta[c]
         _no_missing(v, c)
         if pd.api.types.is_numeric_dtype(v) or pd.api.types.is_bool_dtype(v):
             parts.append(v.to_numpy(dtype=float)[:, None])
+            names.append(f"covariate {c}")
         else:
             cats = sorted(v.dropna().astype(str).unique())
             parts.append((v.astype(str).to_numpy()[:, None] == np.array(cats[1:])).astype(float))
+            names += [f"covariate {c}_{lv}" for lv in cats[1:]]
     cov = np.concatenate(parts, axis=1)
     # A covariate that does not vary over these rows is the intercept again; it carries nothing.
-    cov = cov[:, cov.max(axis=0) > cov.min(axis=0)] if cov.size else cov
-    return cov - cov.mean(axis=0)
+    if cov.size:
+        varies = cov.max(axis=0) > cov.min(axis=0)
+        cov, names = cov[:, varies], [nm for nm, k in zip(names, varies) if k]
+    return cov - cov.mean(axis=0), names
+
+
+def _num2str(v) -> str:
+    """A level as ``snpm_glm_design.m`` ``tostr`` writes it: a logical as ``false``/``true``
+    (MATLAB ``string``), a number as ``num2str`` (whole numbers without a decimal point)."""
+    if isinstance(v, (bool, np.bool_)):
+        return "true" if v else "false"
+    if not isinstance(v, (int, float, np.integer, np.floating)):
+        return str(v)
+    v = float(v)
+    if v.is_integer():
+        return str(int(v))
+    digits = max(int(np.ceil(np.log10(abs(v)))), 1) + 4
+    return f"{v:.{digits}g}"
+
+
+def _level_names(col, levels) -> list[str]:
+    """'<col>_<level>' for every non-reference level, as _ref_dummy codes them."""
+    return [f"{col}_{_num2str(lv)}" for lv in levels[1:]]
 
 
 def _select(p: int, cols) -> np.ndarray:
@@ -150,18 +241,22 @@ def build_design(preset: str, meta: pd.DataFrame, *, group_col=None, condition_c
     model instead of in the residuals that are permuted.
     """
     preset = preset.lower()
+    if preset == "regression" and predictor_col in meta:
+        require_numeric_predictor(meta[predictor_col], predictor_col)
     for role in (group_col, condition_col, subject_col, predictor_col):
         if role is not None and role in meta:
             _no_missing(meta[role], role)
     n = len(meta)
     ones = np.ones((n, 1))
-    cov = _covariates(meta, covariate_cols)
+    cov, cov_names = _covariates(meta, covariate_cols)
     posthoc: list = []
     factor = None
 
     if preset in ("anova1", "ancova"):
         Dg, levels = _ref_dummy(meta[group_col])
         X = np.hstack([ones, Dg] + ([cov] if preset == "ancova" else []))
+        names = (["(Intercept)"] + _level_names(group_col, levels)
+                 + (cov_names if preset == "ancova" else []))
         interest = np.arange(1, 1 + Dg.shape[1])
         perm_type, blocks = "free", np.ones(n, dtype=int)
         label = f"group ({len(levels)} levels)" + (", covariate-adjusted" if preset == "ancova" else "")
@@ -169,14 +264,21 @@ def build_design(preset: str, meta: pd.DataFrame, *, group_col=None, condition_c
     elif preset == "regression":
         pred = meta[predictor_col].to_numpy(dtype=float)
         X = np.hstack([ones, (pred - np.nanmean(pred))[:, None], cov])
+        names = ["(Intercept)", f"predictor {predictor_col}"] + cov_names
         interest = np.array([1])
         perm_type, blocks = "free", np.ones(n, dtype=int)
         label = f"slope of {predictor_col}"
     elif preset in ("rmanova", "mixed2way"):
-        Ds, _ = _ref_dummy(meta[subject_col])
+        Ds, slevels = _ref_dummy(meta[subject_col])
         # ``condition_levels`` fixes the level order from outside, so that the condition effect
         # inside one group lists and signs its pairs as the whole table does.
         Dc, clevels = _ref_dummy(meta[condition_col], condition_levels)
+        names = (["(Intercept)"] + _level_names(subject_col, slevels)
+                 + _level_names(condition_col, clevels))
+        if preset == "mixed2way":
+            glevels = _levels(meta[group_col])[0]
+            names += [f"{g}:{c}" for g in _level_names(group_col, glevels)
+                      for c in _level_names(condition_col, clevels)]   # group outer
         ns, nc = Ds.shape[1], Dc.shape[1]
         perm_type, blocks = "within", _levels(meta[subject_col])[1]
         if preset == "mixed2way" and effect.lower() == "interaction":
@@ -206,7 +308,66 @@ def build_design(preset: str, meta: pd.DataFrame, *, group_col=None, condition_c
     nuisance = np.ones(X.shape[1], dtype=bool)
     nuisance[interest] = False
     return Design(X=X, C=_select(X.shape[1], interest), nuisance=nuisance, blocks=blocks,
-                  perm_type=perm_type, effect_label=label, posthoc=posthoc, factor_col=factor)
+                  perm_type=perm_type, effect_label=label, posthoc=posthoc, factor_col=factor,
+                  col_names=names)
+
+
+@dataclass
+class Estimability:
+    estimable: bool
+    nuisance_deficient: bool
+    effect_items: list[str]
+    nuisance_items: list[str]
+
+
+def estimability(design: Design, enforce: bool = False) -> Estimability:
+    """Is the effect estimable apart from its Freedman-Lane nuisance (``snpm_glm_estimability.m``)?
+
+    With Z the nuisance columns and Xe the effect columns, and ``tol = max(X.shape) * eps *
+    s_max(X)`` from the full X, the identity contrast on Xe is estimable exactly when
+    ``rank([Z Xe], tol) == rank(Z, tol) + cols(Xe)``. When it is not, the pinv solution still
+    gives a finite statistic and every p-value would be arbitrary: ``enforce`` refuses
+    (``effectAliased``), even when only one effect column is aliased. When only Z is
+    rank-deficient the contrast is estimable and the Freedman-Lane fit is the unique projection,
+    so ``enforce`` warns (:class:`GLMNuisanceRankDeficient`) and the analysis runs.
+
+    Aliased columns are named by a left-to-right walk over Z first, then Xe. X is fixed across
+    Freedman-Lane permutations, so the check on the observed design is exact. Texts are
+    MATLAB's word for word."""
+    X = design.X
+    nuis = np.asarray(design.nuisance, bool)
+    names = list(design.col_names)
+    if len(names) != X.shape[1]:
+        names = [f"column {j + 1}" for j in range(X.shape[1])]
+    info = Estimability(True, False, [], [])
+    if X.size == 0:
+        return info
+    tol = rank_tol(X)
+    order = list(np.flatnonzero(nuis)) + list(np.flatnonzero(~nuis))
+    rZ = np.linalg.matrix_rank(X[:, nuis], tol) if nuis.any() else 0
+    info.estimable = bool(np.linalg.matrix_rank(X[:, order], tol) == rZ + int((~nuis).sum()))
+    info.nuisance_deficient = bool(rZ < nuis.sum())
+    if not info.estimable or info.nuisance_deficient:
+        _, items = aliased_columns(X, names, order, tol, "is zero on every row")
+        for j, item in items:
+            (info.nuisance_items if nuis[j] else info.effect_items).append(item)
+    if not enforce:
+        return info
+    if not info.estimable:
+        raise GLMInputError(
+            "effectAliased",
+            f"The effect tested ({design.effect_label}) cannot be separated from the nuisance "
+            f"columns of the design: {'; '.join(info.effect_items)}. Its contrast is not "
+            "estimable, so the statistic and every p-value would be arbitrary. Remove the "
+            "covariate that repeats the effect, or test a different effect.")
+    if info.nuisance_deficient:
+        warnings.warn(
+            "The nuisance columns of the design are linearly dependent: "
+            f"{'; '.join(info.nuisance_items)}. The effect is still estimable and the analysis "
+            "runs; the adjustment is for the space these columns span, which the redundant "
+            "column does not enlarge. Check the covariate list.",
+            GLMNuisanceRankDeficient, stacklevel=3)
+    return info
 
 
 # --------------------------------------------------------------------------- statistic
@@ -520,10 +681,13 @@ def _pair_loop(parent: Loop, preset: str, meta: pd.DataFrame, label, a, b, cols)
     if preset == "mixed2way":
         kw["effect"] = "condition"
     d = build_design(preset, sub, **kw)
-    if d.C.shape[0] != 1 or np.linalg.matrix_rank(d.X) < d.X.shape[1]:
+    # Estimability of the pair's effect apart from its nuisance, the rule the main design is
+    # refused by: a pair whose only dependency is a redundant covariate runs, as the main design
+    # does.
+    if d.C.shape[0] != 1 or not estimability(d).estimable:
         return ("the design for these two levels cannot be estimated (a covariate may coincide "
                 "with the two groups)")
-    if d.X.shape[0] - d.X.shape[1] < 1:
+    if d.X.shape[0] - np.linalg.matrix_rank(d.X, rank_tol(d.X)) < 1:
         return "too few rows for these two levels to leave any error degrees of freedom"
     # The design's own contrast is (its second level) - (its reference level); report a - b.
     # The reference is the first level in the order the builder used: a fixed condition order
@@ -543,6 +707,10 @@ def _with_posthoc(role, preset, Y, rows, meta, mask=None, **cols) -> list[Loop]:
     Y = np.asarray(Y, dtype=float)
     mask = np.isfinite(Y).all(axis=0) if mask is None else mask
     parent = Loop(role, Y, np.asarray(rows), build_design(preset, meta, **kw), None, mask=mask)
+    # every listed covariate constant on these rows -> dropped -> no covariate left
+    require_covariate(preset, cols.get("covariate_cols"), parent.design)
+    # An effect aliased with the nuisance is refused; a nuisance-only dependency warns and runs.
+    estimability(parent.design, enforce=True)
     _require_error_df(parent.design.X, role)
     parent.C = parent.design.C
     pairs = [] if role == "interaction" else parent.design.posthoc
