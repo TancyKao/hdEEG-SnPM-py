@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.8.0)
+## 0.8.0 (2026-10-28)
 
 Changed:
 - New setting `cluster_statistic` = `"sum"` (default) or `"mean"` for every analysis that
@@ -27,7 +27,7 @@ Changed:
   default.
 - MATLAB has the same setting and default (hdEEG-SnPM, same release).
 
-## 0.7.0 (2026-10-27)
+## 0.7.0 (2026-10-27, not released on its own; published as part of 0.8.0)
 
 Added:
 - The window reads a table file as well as TurtleWave databases: "Data source" switches between
