@@ -40,6 +40,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from ..io import tables
 from ..io import turtlewave as tw
 from ..output import run_and_write
 from . import form
@@ -116,12 +117,13 @@ class MainWindow(QWidget):
         self.state = form.FormState()
         self.available = self.subjects = None
         self.loaded_folder = self.loaded_subjects = ""     # the paths read, not the text shown
-        self.loaded_table = {1: "", 2: ""}                 # table source: the files read
-        self.sheets_of = {1: "", 2: ""}                    # the file whose sheets are listed
-        self.columns = {1: None, 2: None}                  # their column names
-        self.numeric = {1: [], 2: []}                      # those read as numbers
+        slots = (1, 2, 3, 4)
+        self.loaded_table = dict.fromkeys(slots, "")       # table source: the files read
+        self.sheets_of = dict.fromkeys(slots, "")          # the file whose sheets are listed
+        self.columns = dict.fromkeys(slots)                # their column names
+        self.numeric = {i: [] for i in slots}              # those read as numbers
         self.subjects_numeric = []                         # same, of the subjects file
-        self.file2_label = ""                              # what the second file was read as
+        self.file_label = dict.fromkeys(slots, "")         # what each file was read as
         self.role_cols = []                                # the columns roles can name
 
         # 0. Data source
@@ -193,11 +195,14 @@ class MainWindow(QWidget):
         # 1-2. Table files (table source)
         self.table_form = QFormLayout()
         self.file_edit, self.sheet, self.caption, self.file_rows = {}, {}, {}, {}
-        for i in (1, 2):
+        for i in slots:
             edit = self.file_edit[i] = QLineEdit()
-            edit.setPlaceholderText("CSV or Excel file: a subject column, channels E1, E2, … "
-                                    "and any other columns" if i == 1 else
-                                    "the second table, or a subject column plus one score")
+            edit.setPlaceholderText({1: "CSV or Excel file: a subject column, channels E1, E2, "
+                                        "… and any other columns",
+                                     2: "the second table, or a subject column plus one score "
+                                        "or measure",
+                                     }.get(i, "event counts: a subject column and the channels "
+                                              "of the angles file"))
             edit.editingFinished.connect(lambda i=i: self.load_table(i))
             edit.textChanged.connect(self.refresh)
             load_t = QPushButton("Load")
@@ -260,6 +265,19 @@ class MainWindow(QWidget):
                                    "sex are dummy-coded.")
         self.covariates.itemChanged.connect(self.refresh)
         self.session = QComboBox()
+        self.subject_col, self.condition_col = QComboBox(), QComboBox()
+        self.circ_units = QComboBox()
+        _fill(self.circ_units, [(v, k) for k, v in form.ANGLE_UNITS.items()],
+              placeholder="choose")
+        self.circ_convention = QComboBox()
+        _fill(self.circ_convention, [(v, k) for k, v in form.ZERO_CONVENTIONS.items()],
+              placeholder="choose")
+        self.circ_convention.setToolTip("Where the exporting tool puts zero; the analysis "
+                                        "rotates the angles so that 0 is the up-state peak.")
+        self.circ_offset = QLineEdit()
+        self.circ_offset.setPlaceholderText("degrees added so that 0 is the up-state peak")
+        self.circ_offset.setValidator(QRegExpValidator(QRegExp(r"-?\d{0,3}(\.\d*)?")))
+        self.measure_col = QComboBox()
         self.roles = QFormLayout()
         self.role_rows = {
             "sessions": _row(QLabel("Data 1"), self.session1, QLabel("Data 2"), self.session2),
@@ -270,13 +288,25 @@ class MainWindow(QWidget):
             "predictor_col": self.predictor_col,
             "covariate_cols": self.covariates,
             "session": self.session,
+            "subject_col": self.subject_col,
+            "condition_col": self.condition_col,
+            "circ_units": self.circ_units,
+            "circ_convention": self.circ_convention,
+            "circ_zero_offset_deg": self.circ_offset,
+            "measure_col": self.measure_col,
         }
         for key, label in (("sessions", "Sessions"), ("subjects_file", "Subjects file"),
+                           ("subject_col", "Subject column"),
                            ("group_col", "Group column"), ("groups", "Groups"),
+                           ("condition_col", "Condition column"),
                            ("behavior_col", "Score column"),
                            ("predictor_col", "Predictor column"),
                            ("covariate_cols", "Covariate columns"),
-                           ("session", "Session to analyse")):
+                           ("session", "Session to analyse"),
+                           ("circ_units", "Angle units"),
+                           ("circ_convention", "Zero of the angles"),
+                           ("circ_zero_offset_deg", "Zero offset (degrees)"),
+                           ("measure_col", "Measure column")):
             self.roles.addRow(label, self.role_rows[key])
 
         # 5. Output and run
@@ -310,13 +340,14 @@ class MainWindow(QWidget):
 
         for w in (self.method, self.band, self.measure, self.analysis, self.tail, self.system,
                   self.datatype, self.session1, self.session2, self.group1, self.group2,
-                  self.score_col, self.predictor_col, self.session):
+                  self.score_col, self.predictor_col, self.session, self.subject_col,
+                  self.condition_col, self.circ_units, self.circ_convention, self.measure_col):
             w.currentIndexChanged.connect(self.refresh)
         self.system.currentIndexChanged.connect(self._captions)
         for w in (self.analysis, self.group_col, self.predictor_col):
             w.currentIndexChanged.connect(lambda *_: (self._fill_covariates(), self.refresh()))
         self.permutations.valueChanged.connect(self.refresh)
-        for w in (self.seed, self.out_edit):
+        for w in (self.seed, self.out_edit, self.circ_offset):
             w.textChanged.connect(self.refresh)
 
         left, right = QVBoxLayout(), QVBoxLayout()
@@ -439,7 +470,7 @@ class MainWindow(QWidget):
         self._fill_roles()
 
     def load_table(self, i, path=None, force=False, sheet=None):
-        """Read the columns of table file ``i`` (1 or 2) in its field; as ``load_folder``, an
+        """Read the columns of table file ``i`` (1 to 4) in its field; as ``load_folder``, an
         unchanged field keeps what was read and chosen. A new file lists its sheets and reads
         the first; ``sheet`` re-reads the listed file with that sheet."""
         if self.running():
@@ -462,9 +493,8 @@ class MainWindow(QWidget):
             if text:
                 cols, numeric = form.table_info(text, _data(self.sheet[i]))
                 self.loaded_table[i], self.columns[i], self.numeric[i] = text, cols, numeric
-                if i == 2:
-                    files = self.state.files()
-                    self.file2_label = files[1] if len(files) > 1 else ""
+                files = self.state.files()
+                self.file_label[i] = files[i - 1] if len(files) >= i else ""
         except Exception as err:     # noqa: BLE001 - shown; the file stays unloaded
             self.caption[i].setText(f"Could not read the file: {err}")
         if not text:
@@ -474,6 +504,7 @@ class MainWindow(QWidget):
         if i == 1:
             self._fill_roles()
         else:
+            self._fill_measure()
             self.refresh()
 
     def _sheet_changed(self, i):
@@ -483,7 +514,7 @@ class MainWindow(QWidget):
             self.load_table(i, path=self.sheets_of[i], force=True, sheet=_data(self.sheet[i]))
 
     def _captions(self, *_):
-        for i in (1, 2):
+        for i in self.file_edit:
             if self.columns[i] is not None:
                 self.caption[i].setText(form.table_caption(self.columns[i], _data(self.system)))
 
@@ -513,11 +544,23 @@ class MainWindow(QWidget):
             _fill(combo, items, placeholder="choose a column",
                   select=prev if prev in items else default)
         keep(self.group_col, cols, "group" if "group" in cols else None)
+        ids = form.other_columns(self.columns[1]) if self.columns[1] is not None else []
+        keep(self.subject_col, ids, tables.subject_column(ids))
+        keep(self.condition_col, cols, next((c for c in ("condition", "session") if c in cols),
+                                            None))
         keep(self.score_col, cols, cols[0] if len(cols) == 1 else None)
         keep(self.predictor_col, form.predictor_choices(cols, numeric))
         self.role_cols = cols
         self._fill_covariates()
         self._fill_groups()
+
+    def _fill_measure(self):
+        """The measure menu: the columns of the measure file (file 2) but its subject column,
+        the only one chosen when there is just one."""
+        cols = form.measure_choices(self.columns[2]) if self.columns[2] is not None else []
+        prev = _data(self.measure_col)
+        _fill(self.measure_col, cols, placeholder="choose a column",
+              select=prev if prev in cols else cols[0] if len(cols) == 1 else None)
 
     def _fill_covariates(self, *_):
         """The covariate list: the role columns but the effect of interest, which is dropped
@@ -575,31 +618,50 @@ class MainWindow(QWidget):
         s.predictor_col = _data(self.predictor_col) or ""
         s.covariate_cols = [self.covariates.item(k).text() for k in range(self.covariates.count())
                             if self.covariates.item(k).checkState() == Qt.Checked]
+        s.subject_col = _data(self.subject_col) or ""
+        s.condition_col = _data(self.condition_col) or ""
+        s.circ_units = _data(self.circ_units) or ""
+        s.circ_convention = _data(self.circ_convention) or ""
+        try:
+            s.circ_zero_offset_deg = float(self.circ_offset.text())
+        except ValueError:                   # empty, or a sign alone
+            s.circ_zero_offset_deg = None
+        s.measure_col = _data(self.measure_col) or ""
         s.source = _data(self.source)
         files = {}
-        for i in (1, 2):
+        for i in self.file_edit:
             # As for the folder: a table typed but not read yet counts as no table.
             same = self.file_edit[i].text().strip() == self.loaded_table[i]
             files[i] = self.loaded_table[i] if same and self.columns[i] is not None else ""
-        s.data1_file, s.data2_file = files[1], files[2]
-        s.data1_sheet = _data(self.sheet[1]) if files[1] else None
-        s.data2_sheet = _data(self.sheet[2]) if files[2] else None
+            setattr(s, f"data{i}_file", files[i])
+            setattr(s, f"data{i}_sheet", _data(self.sheet[i]) if files[i] else None)
         s.meta_cols = form.other_columns(self.columns[1]) if files[1] else []
         s.output_path = self.out_edit.text().strip()
 
     def refresh(self, *_):
         self._read()
         table, files = self.state.table(), self.state.files()
-        if len(files) > 1 and self.file_edit[2].text() and files[1] != self.file2_label:
-            # The second file now means something else (a condition, a group, a score table):
-            # one read for another analysis is not carried over.
-            self.file2_label = files[1]
-            self.file_edit[2].blockSignals(True)
-            self.file_edit[2].clear()
-            self.file_edit[2].blockSignals(False)
-            self.loaded_table[2], self.columns[2], self.sheets_of[2] = "", None, ""
-            _fill(self.sheet[2], [])
-            self.caption[2].setText("")
+        cleared = set()
+        for i in range(1, len(files) + 1):
+            if not self.file_edit[i].text():
+                self.file_label[i] = files[i - 1]       # what a path typed here is read as
+            elif files[i - 1] != self.file_label[i]:
+                # This file now means something else (a condition, a group, angles, a score
+                # table, event counts): one read for another analysis is not carried over.
+                self.file_label[i] = files[i - 1]
+                cleared.add(i)
+                self.file_edit[i].blockSignals(True)
+                self.file_edit[i].clear()
+                self.file_edit[i].blockSignals(False)
+                self.loaded_table[i], self.columns[i], self.sheets_of[i] = "", None, ""
+                _fill(self.sheet[i], [])
+                self.caption[i].setText("")
+        if 1 in cleared:
+            self._fill_measure()
+            self._fill_roles()          # the role menus came from file 1; this refreshes again
+            return
+        if cleared:
+            self._fill_measure()
             self._read()
         visible = {"Data": True, "Study": not table, "Events": not table, "Table files": table,
                    "Analysis": True, "Roles": bool(self.state.roles()), "Output": True}
@@ -609,7 +671,7 @@ class MainWindow(QWidget):
                 box.setVisible(visible[title])
                 number += visible[title] and title != "Data"
                 box.setTitle(title if title == "Data" else f"{number}. {title}")
-        for i in (1, 2):
+        for i in self.file_edit:
             on = i <= len(files)
             label = self.table_form.labelForField(self.file_rows[i])
             label.setText(files[i - 1] if on else f"File {i}")
@@ -631,6 +693,9 @@ class MainWindow(QWidget):
         is_t = self.state.comparison in form.T_TESTS
         self.tail.setVisible(is_t)
         self.analysis_form.labelForField(self.tail).setVisible(is_t)
+        not_circ = self.state.comparison not in form.CIRC
+        self.datatype.setVisible(not_circ)
+        self.analysis_form.labelForField(self.datatype).setVisible(not_circ)
         missing, running = self.state.missing(), self.running()
         for box in self.input_boxes:
             box.setEnabled(not running)

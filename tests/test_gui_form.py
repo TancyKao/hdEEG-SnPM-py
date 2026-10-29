@@ -27,6 +27,8 @@ TOP = {
     "anova1": 'comparison = "anova1"\ngroup_col = "group"',
     "ancova": 'comparison = "ancova"\ngroup_col = "group"\ncovariate_cols = ["age"]',
     "regression": 'comparison = "regression"\npredictor_col = "score"\ncovariate_cols = ["age"]',
+    "rmanova": 'comparison = "rmanova"',
+    "mixed2way": 'comparison = "mixed2way"\ngroup_col = "group"',
     "correlationP": 'comparison = "correlationP"\nbehavior_col = "score"',
     "correlationS": 'comparison = "correlationS"\nbehavior_col = "score"',
 }
@@ -36,6 +38,8 @@ ROLES = {
     "anova1": {"group_col": "group"},
     "ancova": {"group_col": "group", "covariate_cols": ["age"]},
     "regression": {"predictor_col": "score", "covariate_cols": ["age"]},
+    "rmanova": {},
+    "mixed2way": {"group_col": "group"},
     "correlationP": {"behavior_col": "score"},
     "correlationS": {"behavior_col": "score"},
 }
@@ -43,7 +47,8 @@ ROLES = {
 
 def setup(tmp_path, comparison, out="out"):
     """The synthetic study, the form filled for ``comparison`` and the hand-written config."""
-    paired = comparison == "pairedT"
+    paired = comparison in ("pairedT", "rmanova", "mixed2way")     # sessions are compared
+    no_subjects = comparison in ("pairedT", "rmanova")
     study(tmp_path / "db", sessions=("ses-1", "ses-2") if paired else ("",))
     groups = ["A", "B", "C"] * 4 if comparison == "anova1" else ["A", "B"] * 6
     subjects_csv(tmp_path / "subjects.csv", group=groups, score=np.linspace(0, 1, 12),
@@ -52,11 +57,11 @@ def setup(tmp_path, comparison, out="out"):
         folder=str(tmp_path / "db"), sessions_found=["ses-1", "ses-2"] if paired else [""],
         event_type="spindle", method="Moelle2011", stage=["NREM2", "NREM3"], band=(12.0, 15.0),
         measure="count", comparison=comparison, permutations=100, seed=7,
-        subjects_file="" if paired else str(tmp_path / "subjects.csv"),
+        subjects_file="" if no_subjects else str(tmp_path / "subjects.csv"),
         output_path=str(tmp_path / out), **ROLES[comparison])
     text = TOP[comparison] + '\nchannels = "egi"\ndatatype = "absolute"\npermutations = 100\n' \
         f'seed = 7\noutput_path = "{out}"\n\n[turtlewave]\nfolder = "db"\n' \
-        + ("" if paired else 'subjects_file = "subjects.csv"\n') + \
+        + ("" if no_subjects else 'subjects_file = "subjects.csv"\n') + \
         'event_type = "spindle"\nmethod = "Moelle2011"\nstage = ["NREM2", "NREM3"]\n' \
         'freq_lower = 12\nfreq_upper = 15\nmeasure = "count"\nsubject_from = "auto"\n'
     (tmp_path / "hand.toml").write_text(text)
@@ -85,6 +90,17 @@ def test_a_run_from_the_form_equals_snpm_run(tmp_path, comparison):
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "data"
 DESIGN_META = ["Subject", "group", "logAHI", "age", "sex"]
+CIRC_FILES = {"groupA.csv": "circ_phase_groupA.csv", "groupB.csv": "circ_phase_groupB.csv",
+              "countsA.csv": "circ_phase_countsA.csv", "countsB.csv": "circ_phase_countsB.csv",
+              "angles.csv": "circ_anglinear_angles.csv",
+              "measure.csv": "circ_anglinear_measure.csv", "mixed.csv": "glm_mixed2way_2x3.csv"}
+ANGLES = 'circ_units = "rad"\ncirc_convention = "literature_uppeak0"'
+MIXED_META = 'meta_cols = ["Subject", "group", "condition"]'
+CIRC_GROUP = (('data1_file = "groupA.csv"\ndata2_file = "groupB.csv"\n'
+               f'count1_file = "countsA.csv"\ncount2_file = "countsB.csv"\n{ANGLES}'),
+              {"data1_file": "groupA.csv", "data2_file": "groupB.csv",
+               "data3_file": "countsA.csv", "data4_file": "countsB.csv", "circ_units": "rad",
+               "circ_convention": "literature_uppeak0"})
 TABLE_TOP = {
     "pairedT": ('tail = "both"\ndata1_file = "condA.csv"\ndata2_file = "condB.csv"',
                 {"data1_file": "condA.csv", "data2_file": "condB.csv"}),
@@ -103,18 +119,35 @@ TABLE_TOP = {
                    f"meta_cols = {DESIGN_META!r}".replace("'", '"'),
                    {"data1_file": "design.csv", "predictor_col": "logAHI",
                     "covariate_cols": ["age", "sex"]}),
+    "rmanova": (('subject_col = "Subject"\ncondition_col = "condition"\n'
+                 f'data_file = "mixed.csv"\n{MIXED_META}'),
+                {"data1_file": "mixed.csv", "subject_col": "Subject",
+                 "condition_col": "condition"}),
+    "mixed2way": (('subject_col = "Subject"\ngroup_col = "group"\ncondition_col = "condition"\n'
+                   f'data_file = "mixed.csv"\n{MIXED_META}'),
+                  {"data1_file": "mixed.csv", "subject_col": "Subject", "group_col": "group",
+                   "condition_col": "condition"}),
     "correlationP": ('data1_file = "condA.csv"\ndata2_file = "scores.csv"',
                      {"data1_file": "condA.csv", "data2_file": "scores.csv"}),
     "correlationS": ('data1_file = "condA.csv"\ndata2_file = "scores.csv"',
                      {"data1_file": "condA.csv", "data2_file": "scores.csv"}),
+    "circ_phase_group": CIRC_GROUP,
+    "circ_phase_group_u2": CIRC_GROUP,
+    "circ_corrAngLinear": ((f'measure_col = "measure"\n{ANGLES}\n'
+                            'data1_file = "angles.csv"\ndata2_file = "measure.csv"'),
+                           {"data1_file": "angles.csv", "data2_file": "measure.csv",
+                            "measure_col": "measure", "circ_units": "rad",
+                            "circ_convention": "literature_uppeak0"}),
 }
 
 
 def table_study(root):
     """Synthetic tables: the paired example (24 subjects x 256 EGI channels), a design table of
     the first condition with group, log AHI, age and sex, its Excel copy behind a notes sheet,
-    and a score table."""
+    a score table, and the shipped mixed-design and circular examples."""
     root.mkdir(exist_ok=True)
+    for name, example in CIRC_FILES.items():
+        shutil.copy(EXAMPLES / example, root / name)
     shutil.copy(EXAMPLES / "paired_condA.csv", root / "condA.csv")
     shutil.copy(EXAMPLES / "paired_condB.csv", root / "condB.csv")
     eeg = pd.read_csv(EXAMPLES / "paired_condA.csv")
@@ -138,14 +171,15 @@ def table_setup(tmp_path, comparison, out="out"):
     table_study(tmp_path)
     top, fields = TABLE_TOP[comparison]
     fields = dict(fields)
-    for k in ("data1_file", "data2_file"):
+    for k in ("data1_file", "data2_file", "data3_file", "data4_file"):
         if k in fields:
             fields[k] = str(tmp_path / fields[k])
     meta = form.other_columns(form.table_columns(fields["data1_file"]))
     state = form.FormState(source="table", comparison=comparison, permutations=100, seed=7,
                            meta_cols=meta, output_path=str(tmp_path / out), **fields)
+    datatype = "" if comparison in form.CIRC else 'datatype = "absolute"\n'
     (tmp_path / "hand.toml").write_text(
-        f'comparison = "{comparison}"\n{top}\nchannels = "egi"\ndatatype = "absolute"\n'
+        f'comparison = "{comparison}"\n{top}\nchannels = "egi"\n{datatype}'
         f'permutations = 100\nseed = 7\noutput_path = "{out}"\n')
     return state, tmp_path / "hand.toml"
 
@@ -196,6 +230,75 @@ def test_a_table_run_from_the_form_equals_snpm_run(tmp_path, comparison):
     assert js["params"]["covariate_cols"] == ["age", "sex"]
 
 
+@pytest.mark.parametrize("comparison", ["rmanova", "mixed2way", "circ_corrAngLinear",
+                                        "circ_phase_group"])
+def test_a_new_table_analysis_from_the_form_equals_snpm_run(tmp_path, comparison):
+    state, hand = table_setup(tmp_path, comparison, out="gui_out")
+    hand.write_text(hand.read_text().replace('"gui_out"', '"out"'))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        paths = run_and_write(state.to_params())
+    same(np.load(paths["npz"]), run(hand)[0])
+
+
+def test_a_circular_test_has_no_tail_or_datatype_and_needs_units_and_zero(tmp_path):
+    state, hand = table_setup(tmp_path, "circ_phase_group")
+    params = state.to_params()
+    assert "tail" not in params and "datatype" not in params
+    assert "circ_zero_offset_deg" not in params
+    state.circ_units = state.circ_convention = ""
+    assert state.roles() == ["circ_units", "circ_convention"]
+    assert state.missing() == ["the angle units", "where zero sits in the angles"]
+    state.circ_units, state.circ_convention = "deg", "custom"
+    assert state.roles() == ["circ_units", "circ_convention", "circ_zero_offset_deg"]
+    assert state.missing() == ["the zero offset in degrees"]
+    state.circ_zero_offset_deg = -90.5
+    assert state.missing() == []
+    hand.write_text(hand.read_text().replace(ANGLES, 'circ_units = "deg"\n'
+                                             'circ_convention = "custom"\n'
+                                             'circ_zero_offset_deg = -90.5'))
+    assert state.to_params() == cli.load_config(hand)
+    state.circ_convention = "luna_zerocross0"             # the offset is for custom only
+    assert "circ_zero_offset_deg" not in state.to_params()
+    assert tuple(form.ZERO_CONVENTIONS) == ("literature_uppeak0", "yasa_uppeak0", "luna_zerocross0",
+                                     "turtlewave_pre_v4", "custom")
+
+
+def test_count_files_and_their_sheets_are_named_in_the_config(tmp_path):
+    state, hand = table_setup(tmp_path, "circ_phase_group_u2")
+    with pd.ExcelWriter(tmp_path / "countsA.xlsx") as book:
+        pd.read_csv(tmp_path / "countsA.csv").to_excel(book, sheet_name="counts", index=False)
+    state.data3_file, state.data3_sheet = str(tmp_path / "countsA.xlsx"), "counts"
+    hand.write_text(hand.read_text().replace('count1_file = "countsA.csv"',
+                                             'count1_file = "countsA.xlsx"\n'
+                                             'count1_sheet = "counts"'))
+    assert state.to_params() == cli.load_config(hand)
+    state.data4_file = ""
+    assert state.missing() == ["a group 2 event-count file (press Enter or Load to read it)"]
+    assert "count2_file" not in state.to_params()
+
+
+def test_the_measure_menu_lists_the_measure_files_columns(tmp_path):
+    table_study(tmp_path)
+    assert form.measure_choices(form.table_columns(tmp_path / "measure.csv")) == ["measure"]
+    assert form.measure_choices(form.table_columns(tmp_path / "scores.csv")) == ["logAHI"]
+    state, _ = table_setup(tmp_path, "circ_corrAngLinear")
+    state.measure_col = ""
+    assert state.missing() == ["a measure column"]
+
+
+def test_mixed_designs_from_databases_take_the_session_as_condition():
+    s = form.FormState(folder="db", event_type="spindle", output_path="out", comparison="rmanova",
+                       sessions_found=["ses-1", "ses-2"])
+    assert s.roles() == [] and s.missing() == []
+    assert not {"subject_col", "condition_col", "sessions"} & set(s.to_params())
+    s.comparison = "mixed2way"
+    assert s.roles() == ["subjects_file", "group_col"]
+    assert s.missing() == ["a subjects file (press Enter or Load to read it)", "a group column"]
+    assert not set(form.CIRC) & set(form.SOURCE_ANALYSES["turtlewave"])
+    assert set(form.CIRC) <= set(form.SOURCE_ANALYSES["table"])
+
+
 def test_table_missing_lists_files_and_roles():
     s = form.FormState(source="table", comparison="pairedT")
     assert s.roles() == [] and s.files() == ("Condition 1 file", "Condition 2 file")
@@ -212,6 +315,9 @@ def test_table_missing_lists_files_and_roles():
     assert s.missing() == ["a group column", "at least one covariate column"]
     s.comparison = "correlationS"
     assert s.missing() == ["a score file (press Enter or Load to read it)"]
+    s.comparison = "mixed2way"
+    assert s.roles() == ["subject_col", "group_col", "condition_col"]
+    assert s.missing() == ["a subject column", "a group column", "a condition column"]
 
 
 def test_missing_lists_what_each_analysis_still_needs():

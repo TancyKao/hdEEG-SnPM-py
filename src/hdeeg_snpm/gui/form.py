@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from ..circ import CONVENTIONS
 from ..io import tables
 from ..io import turtlewave as tw
 from ..io.turtlewave_config import read_subjects
@@ -28,22 +29,44 @@ ANALYSES = {
     "anova1": "One-way ANOVA (groups)",
     "ancova": "ANCOVA (groups, adjusted for covariates)",
     "regression": "Regression (predictor, adjusted for covariates)",
+    "rmanova": "Repeated-measures ANOVA (conditions within subject)",
+    "mixed2way": "Mixed ANOVA (group × condition)",
     "correlationP": "Correlation, Pearson",
     "correlationS": "Correlation, Spearman",
+    "circ_phase_group": "Phase, two groups: mean direction (Hotelling T²)",
+    "circ_phase_group_u2": "Phase, two groups: whole distribution (Watson U²)",
+    "circ_corrAngLinear": "Phase vs a measure (circular–linear)",
 }
 SOURCES = {"turtlewave": "TurtleWave folder", "table": "Table file (CSV or Excel)"}
-# A one-sample test of event counts or amplitudes against zero answers no question, so the
-# TurtleWave source does not offer it.
-SOURCE_ANALYSES = {"turtlewave": tuple(k for k in ANALYSES if k != "onesampleT"),
-                   "table": tuple(ANALYSES)}
 T_TESTS = ("pairedT", "unpairedT")
-GLM = ("anova1", "ancova", "regression")
-# The table files each analysis reads, as the config names them, with the window's labels.
+GLM = ("anova1", "ancova", "regression", "rmanova", "mixed2way")
+CIRC = ("circ_phase_group", "circ_phase_group_u2", "circ_corrAngLinear")
+# A one-sample test of event counts or amplitudes against zero answers no question, and a
+# database holds no phase angles, so the TurtleWave source offers neither.
+SOURCE_ANALYSES = {"turtlewave": tuple(k for k in ANALYSES
+                                       if k != "onesampleT" and k not in CIRC),
+                   "table": tuple(ANALYSES)}
+# The table files each analysis reads, in the order data1, data2, count1, count2 of the
+# config, with the window's labels.
 TABLE_FILES = {"pairedT": ("Condition 1 file", "Condition 2 file"),
                "unpairedT": ("Group 1 file", "Group 2 file"),
                "onesampleT": ("Data file",),
                "correlationP": ("Data file", "Score file"),
-               "correlationS": ("Data file", "Score file")}
+               "correlationS": ("Data file", "Score file"),
+               "circ_phase_group": ("Group 1 angles file", "Group 2 angles file",
+                                    "Group 1 event-count file", "Group 2 event-count file"),
+               "circ_corrAngLinear": ("Angles file", "Measure file")}
+TABLE_FILES["circ_phase_group_u2"] = TABLE_FILES["circ_phase_group"]
+FILE_KEYS = ("data1", "data2", "count1", "count2")
+# Where zero sits in the exported angle: the circular tier's own list, with no default, and
+# the window's labels.
+ANGLE_UNITS = {"rad": "radians", "deg": "degrees"}
+_CONVENTION_LABELS = {"literature_uppeak0": "Up-state peak = 0 (literature)",
+                      "yasa_uppeak0": "Up-state peak = 0 (YASA)",
+                      "luna_zerocross0": "Zero crossing = 0 (Luna)",
+                      "turtlewave_pre_v4": "TurtleWave before v4.0 (180° out)",
+                      "custom": "Custom offset"}
+ZERO_CONVENTIONS = {k: _CONVENTION_LABELS.get(k, k) for k in CONVENTIONS}
 EXCEL = (".xlsx", ".xls", ".xlsm")
 
 
@@ -181,6 +204,13 @@ def predictor_choices(columns, numeric) -> list[str]:
     return [c for c in columns if c in numeric]
 
 
+def measure_choices(columns) -> list[str]:
+    """The columns of a measure file offered as ``measure_col``: all but its subject column,
+    as the circular tier reads the file."""
+    sid = tables.subject_column(columns)
+    return [c for c in columns if c != sid]
+
+
 def channel_columns(columns) -> list[str]:
     """The columns ``tables.detect_table`` counts as channels."""
     return list(tables.detect_table(columns).channel_cols)
@@ -270,10 +300,20 @@ class FormState:
     behavior_col: str = ""
     predictor_col: str = ""
     covariate_cols: list[str] = field(default_factory=list)
+    subject_col: str = ""                  # table source: rmanova, mixed2way
+    condition_col: str = ""
+    circ_units: str = ""                   # circular tests: no default, chosen in the window
+    circ_convention: str = ""
+    circ_zero_offset_deg: float | None = None      # convention "custom" only
+    measure_col: str = ""                  # circ_corrAngLinear
     data1_file: str = ""                   # table source: the files read, not the text
     data1_sheet: str | None = None         # Excel only
     data2_file: str = ""
     data2_sheet: str | None = None
+    data3_file: str = ""                   # circular group tests: the event-count files
+    data3_sheet: str | None = None
+    data4_file: str = ""
+    data4_sheet: str | None = None
     meta_cols: list[str] = field(default_factory=list)     # the non-channel columns of data1
     output_path: str = ""
 
@@ -281,31 +321,46 @@ class FormState:
         return self.source == "table"
 
     def needs_session(self) -> bool:
-        return not self.table() and self.comparison != "pairedT" and \
+        return not self.table() and \
+            self.comparison not in ("pairedT", "rmanova", "mixed2way") and \
             len(set(self.sessions_found)) > 1
 
     def files(self) -> tuple[str, ...]:
-        """Table source: the labels of the files the analysis reads (one or two)."""
+        """Table source: the labels of the files the analysis reads (one to four)."""
         return TABLE_FILES.get(self.comparison, ("Data file",)) if self.table() else ()
+
+    def file_paths(self) -> tuple[tuple[str, str | None], ...]:
+        """The (file, sheet) of each table-file slot."""
+        return ((self.data1_file, self.data1_sheet), (self.data2_file, self.data2_sheet),
+                (self.data3_file, self.data3_sheet), (self.data4_file, self.data4_sheet))
 
     def roles(self) -> list[str]:
         """The role inputs the chosen analysis shows."""
         design = {"anova1": ["group_col"], "ancova": ["group_col", "covariate_cols"],
                   "regression": ["predictor_col", "covariate_cols"]}
+        if self.comparison in CIRC:
+            return ["circ_units", "circ_convention"] + \
+                (["circ_zero_offset_deg"] if self.circ_convention == "custom" else []) + \
+                (["measure_col"] if self.comparison == "circ_corrAngLinear" else [])
         if self.table():
+            design.update(rmanova=["subject_col", "condition_col"],
+                          mixed2way=["subject_col", "group_col", "condition_col"])
             return design.get(self.comparison, [])
+        # From databases the session is the condition and the subject is known, as in
+        # turtlewave_config.prepare; mixed2way still needs the groups from a subjects file.
+        design.update(rmanova=[], mixed2way=["group_col"])
         shown = {"pairedT": ["sessions"],
                  "unpairedT": ["subjects_file", "group_col", "groups"],
                  "correlationP": ["subjects_file", "behavior_col"],
                  "correlationS": ["subjects_file", "behavior_col"]}
-        shown.update({k: ["subjects_file", *v] for k, v in design.items()})
+        shown.update({k: ["subjects_file", *v] for k, v in design.items() if v})
         return shown.get(self.comparison, []) + (["session"] if self.needs_session() else [])
 
     def missing(self) -> list[str]:
         """What still has to be filled before the analysis can run."""
         todo = []
         if self.table():
-            for label, path in zip(self.files(), (self.data1_file, self.data2_file)):
+            for label, (path, _) in zip(self.files(), self.file_paths()):
                 if not path:
                     todo.append(f"a {label.lower()} (press Enter or Load to read it)")
         else:
@@ -316,8 +371,12 @@ class FormState:
             todo.append("two different sessions")
         if "subjects_file" in roles and not self.subjects_file:
             todo.append("a subjects file (press Enter or Load to read it)")
+        if "subject_col" in roles and not self.subject_col:
+            todo.append("a subject column")
         if "group_col" in roles and not self.group_col:
             todo.append("a group column")
+        if "condition_col" in roles and not self.condition_col:
+            todo.append("a condition column")
         if "groups" in roles and (len(self.groups) != 2 or not all(self.groups)
                                   or self.groups[0] == self.groups[1]):
             todo.append("two different groups")
@@ -327,6 +386,14 @@ class FormState:
             todo.append("at least one covariate column")
         if "behavior_col" in roles and not self.behavior_col:
             todo.append("a score column")
+        if "circ_units" in roles and not self.circ_units:
+            todo.append("the angle units")
+        if "circ_convention" in roles and not self.circ_convention:
+            todo.append("where zero sits in the angles")
+        if "circ_zero_offset_deg" in roles and self.circ_zero_offset_deg is None:
+            todo.append("the zero offset in degrees")
+        if "measure_col" in roles and not self.measure_col:
+            todo.append("a measure column")
         if "session" in roles and self.session is None:
             todo.append("the session to analyse")
         if not self.output_path:
@@ -354,8 +421,10 @@ class FormState:
         p = {"comparison": self.comparison}
         if self.comparison in T_TESTS:
             p["tail"] = self.tail
-        p.update(channels=self.channels, datatype=self.datatype,
-                 permutations=int(self.permutations))
+        p["channels"] = self.channels
+        if self.comparison not in CIRC:         # the circular tier fixes it to absolute
+            p["datatype"] = self.datatype
+        p["permutations"] = int(self.permutations)
         if self.seed is not None:
             p["seed"] = int(self.seed)
         roles = self.roles()
@@ -363,8 +432,12 @@ class FormState:
             p["sessions"] = list(self.sessions)
         if "session" in roles and self.session is not None:
             p["sessions"] = [self.session]
+        if "subject_col" in roles:
+            p["subject_col"] = self.subject_col
         if "group_col" in roles:
             p["group_col"] = self.group_col
+        if "condition_col" in roles:
+            p["condition_col"] = self.condition_col
         if "groups" in roles:
             p["groups"] = list(self.groups)
         if "predictor_col" in roles:
@@ -373,6 +446,11 @@ class FormState:
             p["covariate_cols"] = list(self.covariate_cols)
         if "behavior_col" in roles:
             p["behavior_col"] = self.behavior_col
+        for k in ("circ_units", "circ_convention", "measure_col"):
+            if k in roles:
+                p[k] = getattr(self, k)
+        if "circ_zero_offset_deg" in roles and self.circ_zero_offset_deg is not None:
+            p["circ_zero_offset_deg"] = float(self.circ_zero_offset_deg)
         if self.table():
             p.update(self._table_params())
         p["output_path"] = _absolute(self.output_path)
@@ -396,8 +474,8 @@ class FormState:
 
     def _table_params(self) -> dict:
         """The files of a hand-written config: ``data_file`` and ``meta_cols`` for a group
-        design, ``data1_file`` (and ``data2_file``) otherwise; a sheet only for Excel. A file not
-        read (yet) is left out."""
+        design, ``data1_file`` (to ``data2_file``, ``count1_file`` and ``count2_file``)
+        otherwise; a sheet only for Excel. A file not read (yet) is left out."""
         if self.comparison in GLM:
             if not self.data1_file:
                 return {}
@@ -407,14 +485,12 @@ class FormState:
             p["meta_cols"] = list(self.meta_cols)
             return p
         p = {}
-        for i, (path, sheet) in enumerate(((self.data1_file, self.data1_sheet),
-                                           (self.data2_file, self.data2_sheet))[:len(self.files())],
-                                          start=1):
+        for key, (path, sheet) in zip(FILE_KEYS, self.file_paths()[:len(self.files())]):
             if not path:
                 continue
-            p[f"data{i}_file"] = _absolute(path)
+            p[f"{key}_file"] = _absolute(path)
             if sheet:
-                p[f"data{i}_sheet"] = sheet
+                p[f"{key}_sheet"] = sheet
         return p
 
     def to_toml(self) -> str:

@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Added:
+- The window (`snpm gui`) offers the repeated-measures ANOVA (`rmanova`), the two-way mixed
+  ANOVA (`mixed2way`) and the three circular analyses (`circ_phase_group`,
+  `circ_phase_group_u2`, `circ_corrAngLinear`). Only the mixed model stays config-only.
+- From a table, `rmanova` takes the subject and condition columns and `mixed2way` also the
+  group column, from one data file. From TurtleWave databases both take the session as the
+  condition, as a `[turtlewave]` section does; `mixed2way` also needs a subjects file and its
+  group column. The circular analyses are offered for tables only, since a database holds no
+  phase angles.
+- The circular analyses read up to four files (two angle files and two event-count files,
+  written as `count1_file` and `count2_file`, with a sheet for Excel), and ask for the angle
+  units and the zero convention, neither with a default; the offset is asked only for
+  `custom`. Tail and data type are not shown or written for them. `circ_corrAngLinear` offers
+  the measure column from the measure file.
+- As before, the window checks nothing itself: its saved config equals a hand-written one and
+  every refusal comes from the pipeline with its own text.
+
+Fixed:
+- A path typed into the second file field of the table source was cleared at the first
+  keystroke, so only Browse… could fill it.
+
 ## 0.8.0 (2026-10-28)
 
 Changed:

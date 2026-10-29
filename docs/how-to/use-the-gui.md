@@ -16,10 +16,12 @@ Either way it runs the settings as `snpm run` does, so a result from the window 
 result of `snpm run` on the configuration it saves, and a refusal is shown with the same text.
 
 The window offers the paired and unpaired t-tests, the one-way analysis of variance (ANOVA),
-the analysis of covariance (ANCOVA), regression and the Pearson and Spearman correlations, and
-with a table also the one-sample t-test against zero. The repeated-measures designs (`rmanova`,
-`mixed2way`), the mixed linear model and the circular analyses still go through a
-configuration file.
+the analysis of covariance (ANCOVA), regression, the repeated-measures ANOVA (`rmanova`), the
+two-way mixed ANOVA of group by condition (`mixed2way`) and the Pearson and Spearman
+correlations. With a table it also offers the one-sample t-test against zero and the three
+circular (phase) analyses, which need angles that a database does not hold. Only the mixed
+linear model (`mixedmodel`) still goes through a configuration file, because it needs model
+formulas.
 
 ## Install and open
 
@@ -55,7 +57,8 @@ Without PyQt5 both stop with the install command above.
    one there instead (the list holds the sets every database stores); see [which artefacts density's time
    excludes](read-turtlewave-databases.md#which-artefacts-densitys-time-excludes).
 3. **Analysis.** The analysis, the tail (t-tests only), the number of permutations, the seed,
-   the recording system and the data type. When the seed is left empty, the window draws one
+   the recording system and the data type (not for the circular analyses, whose angles are
+   never transformed). When the seed is left empty, the window draws one
    when you press Run or Save config… and shows it in the field, so the saved config repeats
    the run exactly. These are the keys of the same names in [Parameters](../reference/parameters.md).
 4. **Roles.** What the analysis needs besides the databases:
@@ -69,7 +72,11 @@ Without PyQt5 both stop with the install command above.
    - regression: a subjects file, the predictor column (the menu lists only the numeric
      columns of the subjects file) and any covariate columns;
    - correlations: a subjects file and the score column to correlate with;
-   - any analysis other than the paired t-test, when the databases come from more than one
+   - repeated-measures ANOVA: nothing; the sessions are the conditions, so the databases must
+     come from session folders (`<subject>/<ses-...>/`);
+   - mixed ANOVA: a subjects file and its group column; the sessions are the conditions, as
+     for the repeated-measures ANOVA;
+   - any other analysis but the paired t-test, when the databases come from more than one
      session: the session to analyse.
 5. **Output.** The folder for the results.
 
@@ -92,10 +99,21 @@ Without PyQt5 both stop with the install command above.
    - one-sample t-test: one data file, tested against zero (for example a file of differences);
    - correlations: a data file and a score file, which is a subject column plus the one score
      to correlate with (or a second channel table); subjects are matched by the subject column;
-   - a second file read for one analysis is cleared when you switch to an analysis that reads
-     its second file as something else (for example from a paired t-test to a correlation);
-   - one-way ANOVA, ANCOVA and regression: one data file holding the channels and the design
-     columns.
+   - a file read for one analysis is cleared when you switch to an analysis that reads that
+     file as something else, for any of the files (for example from a paired t-test to a
+     correlation, which reads its second file as scores, or from an unpaired t-test to a phase
+     analysis, which reads its first file as angles). A file is kept when its label stays the
+     same;
+   - one-way ANOVA, ANCOVA, regression, repeated-measures ANOVA and mixed ANOVA: one data file
+     holding the channels and the design columns (for the last two, one row per subject and
+     condition);
+   - phase, two groups (Hotelling T² or Watson U²): a group 1 and a group 2 angles file, and a
+     group 1 and a group 2 event-count file with the same subjects and channels as that group's
+     angles;
+   - phase vs a measure: an angles file and a measure file, which is a subject column plus the
+     measure (more columns are allowed; choose one under Roles).
+
+   The files are those of [Run a circular analysis](run-a-circular-analysis.md#prepare-the-files).
 
    Keep the t-test and correlation files to a subject column and channels. Other columns are
    not design columns there, and when they get in the way (a text column, or two files whose
@@ -110,6 +128,19 @@ Without PyQt5 both stop with the install command above.
      `group`, choose the one-way ANOVA or ANCOVA. A text column such as `sex` is turned into indicator
      columns by the analysis itself. The covariate list leaves out the column chosen as group
      or predictor, and a ticked covariate that becomes the group or predictor is unticked.
+
+   - repeated-measures ANOVA: the subject column and the condition column (picked for you
+     when the file has columns named like `Subject` and `condition` or `session`);
+   - mixed ANOVA: the subject, group and condition columns;
+   - circular analyses: the angle units (radians or degrees) and where zero sits in the
+     exported angle: "Up-state peak = 0 (literature)", "Up-state peak = 0 (YASA)", "Zero
+     crossing = 0 (Luna)", "TurtleWave before v4.0 (180° out)" or "Custom offset" with the
+     offset in degrees (saved as `literature_uppeak0`, `yasa_uppeak0`, `luna_zerocross0`,
+     `turtlewave_pre_v4` or `custom`). Neither has a
+     default: a wrong guess rotates every angle, so you must choose both. What each convention
+     means is in [Declare the zero convention](run-a-circular-analysis.md#declare-the-zero-convention).
+     Phase vs a measure also needs the measure column of the measure file, chosen for you when
+     there is only one.
 
    The t-tests and correlations need no roles.
 4. **Output.** The folder for the results.
@@ -135,7 +166,8 @@ the window lists the four files, and **Open report** opens the HTML report in th
 
 **Save config…** writes the settings as a TOML file, with the full paths of this computer.
 On another computer, such as a computing cluster, edit the paths in the file (`folder` and
-`subjects_file`, or `data_file`, `data1_file` and `data2_file`, and `output_path`) to where the
+`subjects_file`, or `data_file`, `data1_file`, `data2_file`, `count1_file` and
+`count2_file`, and `output_path`) to where the
 data are there. Run it with:
 
     snpm run saved.toml

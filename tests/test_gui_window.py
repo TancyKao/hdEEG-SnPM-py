@@ -7,6 +7,7 @@ import os
 import sqlite3
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from hdeeg_snpm import cli
@@ -81,8 +82,10 @@ def test_each_analysis_shows_its_roles(tmp_path):
                 "anova1": {"subjects_file", "group_col", "session"},
                 "ancova": {"subjects_file", "group_col", "covariate_cols", "session"},
                 "regression": {"subjects_file", "predictor_col", "covariate_cols", "session"},
+                "rmanova": set(), "mixed2way": {"subjects_file", "group_col"},
                 "correlationP": {"subjects_file", "behavior_col", "session"},
                 "correlationS": {"subjects_file", "behavior_col", "session"}}
+    assert [win.analysis.itemData(i) for i in range(win.analysis.count())] == list(expected)
     for comparison, roles in expected.items():
         choose(win.analysis, comparison)
         assert {k for k in win.role_rows if shown(win, k)} == roles, comparison
@@ -353,13 +356,26 @@ def test_table_roles_per_analysis_and_run_waits_for_them(table):
     expected = {"pairedT": set(), "unpairedT": set(), "onesampleT": set(),
                 "anova1": {"group_col"}, "ancova": {"group_col", "covariate_cols"},
                 "regression": {"predictor_col", "covariate_cols"},
-                "correlationP": set(), "correlationS": set()}
+                "rmanova": {"subject_col", "condition_col"},
+                "mixed2way": {"subject_col", "group_col", "condition_col"},
+                "correlationP": set(), "correlationS": set(),
+                "circ_phase_group": {"circ_units", "circ_convention"},
+                "circ_phase_group_u2": {"circ_units", "circ_convention"},
+                "circ_corrAngLinear": {"circ_units", "circ_convention", "measure_col"}}
+    assert [win.analysis.itemData(i) for i in range(win.analysis.count())] == list(expected)
     for comparison, roles in expected.items():
         choose(win.analysis, comparison)
         assert {k for k in win.role_rows if shown(win, k)} == roles, comparison
+        circular = comparison.startswith("circ_")
+        assert win.datatype.isHidden() == circular and \
+            win.analysis_form.labelForField(win.datatype).isHidden() == circular
+        assert win.tail.isHidden() == (comparison not in ("pairedT", "unpairedT"))
+        labels = [win.table_form.labelForField(win.file_rows[i]).text()
+                  for i in win.file_rows if not win.file_rows[i].isHidden()]
+        assert tuple(labels) == win.state.files(), comparison
+    choose(win.analysis, "regression")
     win.load_table(1, tmp / "design.csv")
     win.out_edit.setText(str(tmp / "out"))
-    choose(win.analysis, "regression")
     assert not win.run_btn.isEnabled() and "a predictor column" in win.hint.text()
     choose(win.predictor_col, "logAHI")
     assert win.run_btn.isEnabled()
@@ -368,8 +384,9 @@ def test_table_roles_per_analysis_and_run_waits_for_them(table):
     tick(win, "age", "sex")
     assert win.run_btn.isEnabled()
     assert win.state.to_params()["covariate_cols"] == ["age", "sex"]
-    choose(win.analysis, "unpairedT")
-    assert "a group 2 file" in win.hint.text() and not win.run_btn.isEnabled()
+    choose(win.analysis, "unpairedT")                       # the data file is no group file
+    assert "a group 1 file" in win.hint.text() and "a group 2 file" in win.hint.text()
+    win.load_table(1, tmp / "condA.csv")
     win.load_table(2, tmp / "condB.csv")
     assert win.run_btn.isEnabled()
 
@@ -535,3 +552,144 @@ def test_a_second_file_read_for_another_analysis_is_not_sent(table):
     win.load_table(2, tmp / "scores.csv")
     choose(win.analysis, "correlationS")                    # same meaning: kept
     assert win.state.to_params()["data2_file"] == str(tmp / "scores.csv")
+
+
+def test_a_mixed_anova_takes_its_roles_from_the_data_file(table):
+    win, tmp = table
+    choose(win.analysis, "mixed2way")
+    win.load_table(1, tmp / "mixed.csv")
+    win.out_edit.setText(str(tmp / "out"))
+    assert (win.subject_col.currentData(), win.group_col.currentData(),
+            win.condition_col.currentData()) == ("Subject", "group", "condition")
+    assert win.run_btn.isEnabled()
+    params = win.state.to_params()
+    assert params["meta_cols"] == ["Subject", "group", "condition"]
+    choose(win.analysis, "rmanova")
+    assert win.run_btn.isEnabled() and "group_col" not in win.state.to_params()
+    choose(win.condition_col, "\x00unset")
+    assert not win.run_btn.isEnabled() and "a condition column" in win.hint.text()
+
+
+def circular(win, tmp, comparison="circ_phase_group"):
+    choose(win.analysis, comparison)
+    for i, name in enumerate(("groupA.csv", "groupB.csv", "countsA.csv", "countsB.csv"),
+                             start=1):
+        win.load_table(i, tmp / name)
+    win.out_edit.setText(str(tmp / "out"))
+    win.permutations.setValue(100)
+    win.seed.setText("7")
+
+
+def test_a_circular_run_waits_for_units_and_zero(table):
+    win, tmp = table
+    circular(win, tmp)
+    assert [win.table_form.labelForField(win.file_rows[i]).text() for i in range(1, 5)] == \
+        list(win.state.files())
+    assert win.circ_units.currentData() == "\x00unset"               # no default
+    assert win.circ_convention.currentData() == "\x00unset"
+    assert win.circ_convention.itemText(win.circ_convention.findData("luna_zerocross0")) == \
+        "Zero crossing = 0 (Luna)"                                  # the key is the data
+    assert not win.run_btn.isEnabled()
+    assert "the angle units, where zero sits in the angles" in win.hint.text()
+    choose(win.circ_units, "rad")
+    choose(win.circ_convention, "custom")
+    assert shown(win, "circ_zero_offset_deg") and "the zero offset" in win.hint.text()
+    win.circ_offset.setText("-90")
+    assert win.run_btn.isEnabled() and win.state.to_params()["circ_zero_offset_deg"] == -90.0
+    choose(win.circ_convention, "literature_uppeak0")
+    assert not shown(win, "circ_zero_offset_deg") and win.run_btn.isEnabled()
+    params = win.state.to_params()
+    assert "tail" not in params and "datatype" not in params
+    assert "circ_zero_offset_deg" not in params
+    assert params["count2_file"] == str(tmp / "countsB.csv")
+    choose(win.analysis, "unpairedT")                        # group files of another kind
+    assert win.file_edit[2].text() == "" and win.state.data2_file == ""
+    choose(win.analysis, "circ_phase_group_u2")              # counts: same meaning, kept
+    assert win.state.data4_file == str(tmp / "countsB.csv")
+
+
+def test_a_circular_run_from_the_window_equals_the_saved_config(table):
+    win, tmp = table
+    circular(win, tmp)
+    choose(win.circ_units, "rad")
+    choose(win.circ_convention, "literature_uppeak0")
+    win.save_config(tmp / "saved.toml")
+    win.start_run()
+    wait(win)
+    assert win.paths is not None, win.log.toPlainText()
+    assert all(p.is_file() for p in win.paths.values()) and len(win.paths) == 4
+    text = (tmp / "saved.toml").read_text()
+    assert "tail" not in text and "datatype" not in text and "count1_file" in text
+    out = json.dumps(str((tmp / "out").resolve()))
+    (tmp / "cli.toml").write_text(text.replace(out, json.dumps(str(tmp / "cli_out"))))
+    assert cli.main(["run", str(tmp / "cli.toml")]) == 0
+    same(np.load(win.paths["npz"]), np.load(next((tmp / "cli_out").glob("*.npz"))))
+
+
+def test_the_measure_column_is_chosen_from_the_measure_file(table):
+    win, tmp = table
+    choose(win.analysis, "circ_corrAngLinear")
+    win.load_table(1, tmp / "angles.csv")
+    win.load_table(2, tmp / "measure.csv")
+    assert win.measure_col.currentData() == "measure"            # the only column
+    pd.read_csv(tmp / "design.csv")[["Subject", "logAHI", "age"]].to_csv(tmp / "two.csv",
+                                                                         index=False)
+    win.load_table(2, tmp / "two.csv")
+    assert win.measure_col.currentData() == "\x00unset"
+    assert [win.measure_col.itemData(i) for i in range(1, win.measure_col.count())] == \
+        ["logAHI", "age"]
+    choose(win.measure_col, "age")
+    choose(win.circ_units, "rad")
+    choose(win.circ_convention, "yasa_uppeak0")
+    win.out_edit.setText(str(tmp / "out"))
+    assert win.run_btn.isEnabled() and win.state.to_params()["measure_col"] == "age"
+
+
+def test_watson_on_whole_degree_angles_is_refused_by_the_pipeline(table):
+    win, tmp = table
+    for g in "AB":
+        angles = pd.read_csv(tmp / f"group{g}.csv")
+        chans = angles.columns[1:]
+        angles[chans] = np.round(np.degrees(angles[chans]))
+        angles.to_csv(tmp / f"group{g}.csv", index=False)
+    circular(win, tmp, "circ_phase_group_u2")
+    choose(win.circ_units, "deg")
+    choose(win.circ_convention, "literature_uppeak0")
+    assert win.run_btn.isEnabled()
+    win.start_run()
+    wait(win)
+    assert win.paths is None and "Stopped:" in win.log.toPlainText()
+    assert "which Watson's U^2 cannot use" in win.error_box.text()
+    win.error_box.close()
+
+
+def test_a_path_typed_in_a_later_file_field_is_kept(table):
+    win, _ = table
+    choose(win.analysis, "circ_phase_group")
+    for i in (2, 3, 4):
+        win.file_edit[i].setText("typed.csv")
+        assert win.file_edit[i].text() == "typed.csv"
+
+
+def test_a_first_file_read_for_another_analysis_is_not_sent(table):
+    win, tmp = table
+    choose(win.analysis, "unpairedT")
+    win.load_table(1, tmp / "condA.csv")                    # a group 1 power file
+    assert win.state.data1_file == str(tmp / "condA.csv")
+    choose(win.analysis, "pairedT")                         # now a condition file: cleared
+    assert win.file_edit[1].text() == "" and win.state.data1_file == ""
+    win.load_table(1, tmp / "condA.csv")
+    choose(win.analysis, "circ_phase_group")                # now angles: cleared
+    assert win.file_edit[1].text() == "" and "data1_file" not in win.state.to_params()
+    assert "a group 1 angles file" in win.hint.text()
+    choose(win.analysis, "regression")
+    win.load_table(1, tmp / "design.csv")
+    assert win.group_col.count() > 1
+    choose(win.analysis, "circ_corrAngLinear")              # roles of the old file go too
+    assert win.columns[1] is None and win.group_col.count() == 1
+    choose(win.analysis, "anova1")
+    win.load_table(1, tmp / "design.csv")
+    choose(win.source, "turtlewave")                        # no table files shown: kept
+    choose(win.source, "table")
+    choose(win.analysis, "regression")                      # still "Data file": kept
+    assert win.state.data1_file == str(tmp / "design.csv")

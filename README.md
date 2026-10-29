@@ -21,7 +21,7 @@ indices.
 | TurtleWave `neural_events.db` reader | written; density checked only in TurtleWave's environment (below) |
 | Circular phase analyses: circ_phase_group, circ_phase_group_u2, circ_corrAngLinear | ported in phase 2 (v0.2.0); reproduces MATLAB on 8 reference runs |
 | Mixed linear model (`mixedmodel`), random intercept `(1\|Subject)` only | ported in phase 3 (v0.3.0); agrees with MATLAB on 6 reference runs within the fit tolerances (except a few permuted fits where MATLAB's optimiser stops short), correction exact |
-| Window (`snpm gui`) for TurtleWave databases or a CSV/Excel table: t-tests, one-way ANOVA, ANCOVA, regression, correlations | written; MATLAB's App Designer GUI itself is not ported |
+| Window (`snpm gui`) for TurtleWave databases or a CSV/Excel table: every analysis but the mixed model (`mixedmodel`); the circular analyses from a table only | written; MATLAB's App Designer GUI itself is not ported |
 | Spectral-power folders, other random structures | not ported |
 
 How a cluster is scored depends on the analysis:
